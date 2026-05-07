@@ -7,9 +7,11 @@ POST /api/redeem/codex    Codex 批量兑换 + 格式转换下载
 import os
 import io
 import json
+import re
 import secrets
 import zipfile
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
@@ -25,6 +27,7 @@ DOWNLOAD_TOKEN_TTL_MINUTES = 15
 
 # ── 内置分类名称 ──────────────────────────────────────
 CODEX_CATEGORY_NAME = "Codex"
+EXPORT_TZ = ZoneInfo("Asia/Shanghai")
 
 
 def _resolve_asset_file_path(asset) -> str:
@@ -376,9 +379,33 @@ def _with_headers(headers: dict, disposition: str) -> dict:
     return {**headers, "Content-Disposition": disposition}
 
 
+def _export_date_suffix() -> str:
+    return datetime.now(EXPORT_TZ).strftime("%m%d_%H%M")
+
+
+def _safe_filename_part(value, fallback: str = "unknown") -> str:
+    text = str(value or "").strip() or fallback
+    text = re.sub(r"[^A-Za-z0-9._@+]+", "_", text)
+    text = text.strip("._")
+    return text or fallback
+
+
+def _json_filename(prefix: str, name, date_suffix: str) -> str:
+    return f"{prefix}_{_safe_filename_part(name)}_{date_suffix}.json"
+
+
+def _zip_filename(base: str, date_suffix: str, count: int) -> str:
+    return f"{base}_{date_suffix}_{count}.zip"
+
+
+def _sub2api_all_filename(date_suffix: str, count: int) -> str:
+    return f"sub2api_all_in_one_{date_suffix}_{count}.json"
+
+
 def _export_cpa(items: list, headers: dict | None = None) -> StreamingResponse:
     """CPA 格式: 单个=JSON，多个=ZIP"""
     headers = headers or {}
+    date_suffix = _export_date_suffix()
     if len(items) == 1:
         _, asset, cpa = items[0]
         content = json.dumps(cpa, indent=2, ensure_ascii=False)
@@ -386,45 +413,47 @@ def _export_cpa(items: list, headers: dict | None = None) -> StreamingResponse:
         return StreamingResponse(
             io.BytesIO(content.encode("utf-8")),
             media_type="application/json",
-            headers=_with_headers(headers, f'attachment; filename="codex-{email}.json"'),
+            headers=_with_headers(headers, f'attachment; filename="{_json_filename("codex", email, date_suffix)}"'),
         )
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for _, asset, cpa in items:
             email = cpa.get("email", "unknown")
-            fname = f"codex-{email}.json"
+            fname = _json_filename("codex", email, date_suffix)
             zf.writestr(fname, json.dumps(cpa, indent=2, ensure_ascii=False))
     buf.seek(0)
     return StreamingResponse(
         buf,
         media_type="application/zip",
-        headers=_with_headers(headers, 'attachment; filename="codex-cpa-pack.zip"'),
+        headers=_with_headers(headers, f'attachment; filename="{_zip_filename("codex_cpa_pack", date_suffix, len(items))}"'),
     )
 
 
 def _export_sub2api_single(items: list, headers: dict | None = None) -> StreamingResponse:
     """Sub2API 单文件: 所有账号合并到一个 JSON"""
     headers = headers or {}
+    date_suffix = _export_date_suffix()
     accounts = [cpa_to_sub2api_account(cpa) for _, _, cpa in items]
     export = wrap_sub2api(accounts)
     content = json.dumps(export, indent=2, ensure_ascii=False)
     return StreamingResponse(
         io.BytesIO(content.encode("utf-8")),
         media_type="application/json",
-        headers=_with_headers(headers, 'attachment; filename="sub2api-all-in-one.json"'),
+        headers=_with_headers(headers, f'attachment; filename="{_sub2api_all_filename(date_suffix, len(items))}"'),
     )
 
 
 def _export_sub2api_multi(items: list, headers: dict | None = None) -> StreamingResponse:
     """Sub2API 多文件: 每个账号单独一个 JSON，多个打 ZIP"""
     headers = headers or {}
+    date_suffix = _export_date_suffix()
     converted = []
     for _, asset, cpa in items:
         account = cpa_to_sub2api_account(cpa)
         export = wrap_sub2api([account])
         email = cpa.get("email", "unknown")
-        fname = f"sub2api-{email}.json"
+        fname = _json_filename("sub2api", email, date_suffix)
         converted.append((fname, json.dumps(export, indent=2, ensure_ascii=False)))
 
     if len(converted) == 1:
@@ -443,5 +472,5 @@ def _export_sub2api_multi(items: list, headers: dict | None = None) -> Streaming
     return StreamingResponse(
         buf,
         media_type="application/zip",
-        headers=_with_headers(headers, 'attachment; filename="sub2api-pack.zip"'),
+        headers=_with_headers(headers, f'attachment; filename="{_zip_filename("sub2api_pack", date_suffix, len(converted))}"'),
     )

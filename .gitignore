@@ -1,7 +1,51 @@
-.venv/
+# Environment
+.env
+.env.*
+!.env.example
+
+# Python
 __pycache__/
 *.py[cod]
-.env
+*$py.class
+.venv/
+venv/
+env/
+ENV/
+
+# Packaging / build output
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+
+# Test / lint / coverage cache
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Runtime data
 data/
+*.db
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
 server/uploads/
 uploads/
+
+# Logs
+*.log
+logs/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

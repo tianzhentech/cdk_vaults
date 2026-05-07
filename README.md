@@ -5,6 +5,7 @@
 This project uses `uv` for Python dependency and virtual environment management.
 
 ```bash
+cp .env.example .env
 uv sync
 uv run cdk-vaults --reload --port 8000
 ```

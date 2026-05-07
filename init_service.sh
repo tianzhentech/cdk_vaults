@@ -6,6 +6,7 @@ PROJECT_DIR="${SCRIPT_DIR}"
 SERVICE_NAME="${SERVICE_NAME:-cdk-vaults}"
 SERVICE_LABEL="${SERVICE_LABEL:-local.${SERVICE_NAME}}"
 SERVICE_USER="${SERVICE_USER:-${SUDO_USER:-${USER}}}"
+UV_BIN="${UV_BIN:-}"
 
 log() {
     printf '[init] %s\n' "$*"
@@ -16,6 +17,57 @@ need_cmd() {
         printf 'Missing required command: %s\n' "$1" >&2
         exit 1
     fi
+}
+
+run_root() {
+    if [[ "${EUID}" -eq 0 ]]; then
+        "$@"
+    else
+        need_cmd sudo
+        sudo "$@"
+    fi
+}
+
+ensure_uv() {
+    if [[ -n "${UV_BIN}" && -x "${UV_BIN}" ]]; then
+        return
+    fi
+
+    if command -v uv >/dev/null 2>&1; then
+        UV_BIN="$(command -v uv)"
+        return
+    fi
+
+    if [[ -x "${PROJECT_DIR}/.local/bin/uv" ]]; then
+        UV_BIN="${PROJECT_DIR}/.local/bin/uv"
+        return
+    fi
+
+    local install_dir installer
+    install_dir="${PROJECT_DIR}/.local/bin"
+    installer="$(mktemp)"
+    mkdir -p "${install_dir}"
+
+    log "uv not found; installing uv to ${install_dir}"
+    if command -v curl >/dev/null 2>&1; then
+        curl -LsSf -o "${installer}" https://astral.sh/uv/install.sh
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO "${installer}" https://astral.sh/uv/install.sh
+    else
+        printf 'Missing uv and also missing curl/wget to install it.\n' >&2
+        rm -f "${installer}"
+        exit 1
+    fi
+
+    UV_INSTALL_DIR="${install_dir}" sh "${installer}"
+    rm -f "${installer}"
+    export PATH="${install_dir}:${PATH}"
+
+    if [[ ! -x "${install_dir}/uv" ]]; then
+        printf 'uv installation failed: %s not found\n' "${install_dir}/uv" >&2
+        exit 1
+    fi
+    UV_BIN="${install_dir}/uv"
 }
 
 ensure_env() {
@@ -30,18 +82,17 @@ ensure_env() {
 }
 
 install_dependencies() {
-    need_cmd uv
+    ensure_uv
     log "Installing dependencies with uv"
-    (cd "${PROJECT_DIR}" && uv sync --locked)
+    (cd "${PROJECT_DIR}" && "${UV_BIN}" sync --locked)
 }
 
 install_systemd() {
-    local uv_bin
-    uv_bin="$(command -v uv)"
     local service_file="/etc/systemd/system/${SERVICE_NAME}.service"
 
     log "Installing systemd service: ${service_file}"
-    sudo tee "${service_file}" >/dev/null <<EOF
+    if [[ "${EUID}" -eq 0 ]]; then
+        cat > "${service_file}" <<EOF
 [Unit]
 Description=CDK Vaults
 After=network-online.target
@@ -52,22 +103,42 @@ Type=simple
 User=${SERVICE_USER}
 WorkingDirectory=${PROJECT_DIR}
 EnvironmentFile=-${PROJECT_DIR}/.env
-ExecStart=${uv_bin} run cdk-vaults
+ExecStart=${UV_BIN} run cdk-vaults
 Restart=always
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 EOF
+    else
+        need_cmd sudo
+        sudo tee "${service_file}" >/dev/null <<EOF
+[Unit]
+Description=CDK Vaults
+After=network-online.target
+Wants=network-online.target
 
-    sudo systemctl daemon-reload
-    sudo systemctl enable --now "${SERVICE_NAME}"
-    sudo systemctl status "${SERVICE_NAME}" --no-pager || true
+[Service]
+Type=simple
+User=${SERVICE_USER}
+WorkingDirectory=${PROJECT_DIR}
+EnvironmentFile=-${PROJECT_DIR}/.env
+ExecStart=${UV_BIN} run cdk-vaults
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    fi
+
+    run_root systemctl daemon-reload
+    run_root systemctl enable --now "${SERVICE_NAME}"
+    run_root systemctl status "${SERVICE_NAME}" --no-pager || true
 }
 
 install_launchd() {
-    local uv_bin plist log_dir
-    uv_bin="$(command -v uv)"
+    local plist log_dir
     plist="${HOME}/Library/LaunchAgents/${SERVICE_LABEL}.plist"
     log_dir="${PROJECT_DIR}/logs"
 
@@ -85,7 +156,7 @@ install_launchd() {
     <string>${PROJECT_DIR}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>${uv_bin}</string>
+        <string>${UV_BIN}</string>
         <string>run</string>
         <string>cdk-vaults</string>
     </array>

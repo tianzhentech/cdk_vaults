@@ -6,6 +6,7 @@ PROJECT_DIR="${SCRIPT_DIR}"
 SERVICE_NAME="${SERVICE_NAME:-cdk-vaults}"
 SERVICE_LABEL="${SERVICE_LABEL:-local.${SERVICE_NAME}}"
 SKIP_PULL="${SKIP_PULL:-0}"
+UV_BIN="${UV_BIN:-}"
 
 log() {
     printf '[update] %s\n' "$*"
@@ -16,6 +17,55 @@ need_cmd() {
         printf 'Missing required command: %s\n' "$1" >&2
         exit 1
     fi
+}
+
+run_root() {
+    if [[ "${EUID}" -eq 0 ]]; then
+        "$@"
+    else
+        need_cmd sudo
+        sudo "$@"
+    fi
+}
+
+ensure_uv() {
+    if [[ -n "${UV_BIN}" && -x "${UV_BIN}" ]]; then
+        return
+    fi
+
+    if command -v uv >/dev/null 2>&1; then
+        UV_BIN="$(command -v uv)"
+        return
+    fi
+
+    if [[ -x "${PROJECT_DIR}/.local/bin/uv" ]]; then
+        UV_BIN="${PROJECT_DIR}/.local/bin/uv"
+        return
+    fi
+
+    local install_dir installer
+    install_dir="${PROJECT_DIR}/.local/bin"
+    installer="$(mktemp)"
+    mkdir -p "${install_dir}"
+
+    log "uv not found; installing uv to ${install_dir}"
+    if command -v curl >/dev/null 2>&1; then
+        curl -LsSf -o "${installer}" https://astral.sh/uv/install.sh
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO "${installer}" https://astral.sh/uv/install.sh
+    else
+        printf 'Missing uv and also missing curl/wget to install it.\n' >&2
+        rm -f "${installer}"
+        exit 1
+    fi
+
+    UV_INSTALL_DIR="${install_dir}" sh "${installer}"
+    rm -f "${installer}"
+    if [[ ! -x "${install_dir}/uv" ]]; then
+        printf 'uv installation failed: %s not found\n' "${install_dir}/uv" >&2
+        exit 1
+    fi
+    UV_BIN="${install_dir}/uv"
 }
 
 pull_updates() {
@@ -35,16 +85,16 @@ pull_updates() {
 }
 
 sync_dependencies() {
-    need_cmd uv
+    ensure_uv
     log "Syncing dependencies"
-    (cd "${PROJECT_DIR}" && uv sync --locked)
+    (cd "${PROJECT_DIR}" && "${UV_BIN}" sync --locked)
 }
 
 restart_systemd() {
     need_cmd systemctl
     log "Restarting systemd service: ${SERVICE_NAME}"
-    sudo systemctl restart "${SERVICE_NAME}"
-    sudo systemctl status "${SERVICE_NAME}" --no-pager || true
+    run_root systemctl restart "${SERVICE_NAME}"
+    run_root systemctl status "${SERVICE_NAME}" --no-pager || true
 }
 
 restart_launchd() {

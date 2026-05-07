@@ -32,6 +32,9 @@ Initialize the project, install dependencies, and register a system service:
 ./init_service.sh
 ```
 
+If `uv` is not installed, the script installs a project-local copy at
+`.local/bin/uv`.
+
 Apply code updates, sync dependencies, and restart the service:
 
 ```bash

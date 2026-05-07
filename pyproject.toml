@@ -1,0 +1,23 @@
+[project]
+name = "cdk-vaults"
+version = "0.1.0"
+description = "Asset management and CDK redemption service"
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi==0.115.0",
+    "uvicorn[standard]==0.32.0",
+    "python-jose[cryptography]==3.3.0",
+    "python-multipart==0.0.18",
+    "aiofiles==24.1.0",
+    "python-dotenv==1.2.2",
+]
+
+[project.scripts]
+cdk-vaults = "server.cli:main"
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["server", "server.routes", "server.utils"]

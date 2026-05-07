@@ -1,0 +1,11 @@
+Metadata-Version: 2.4
+Name: cdk-vaults
+Version: 0.1.0
+Summary: Asset management and CDK redemption service
+Requires-Python: >=3.14
+Requires-Dist: fastapi==0.115.0
+Requires-Dist: uvicorn[standard]==0.32.0
+Requires-Dist: python-jose[cryptography]==3.3.0
+Requires-Dist: python-multipart==0.0.18
+Requires-Dist: aiofiles==24.1.0
+Requires-Dist: python-dotenv==1.2.2

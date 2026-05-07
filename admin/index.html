@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CDK Vaults — 管理后台</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/admin/style.css">
+</head>
+<body>
+    <!-- 登录遮罩 -->
+    <div id="login-overlay" class="login-overlay">
+        <div class="login-card">
+            <div class="login-brand">CDK <span>Vaults</span></div>
+            <h2>管理后台</h2>
+            <div class="login-form">
+                <input type="password" id="login-password" placeholder="输入管理员密码" autocomplete="current-password">
+                <button id="login-btn">登 录</button>
+                <div id="login-error" class="login-error hidden"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 主布局 -->
+    <div id="app" class="app-layout hidden">
+        <!-- 侧边栏 -->
+        <aside class="sidebar">
+            <div class="sidebar-brand">
+                <div class="brand-dot"></div>
+                <span>CDK Vaults</span>
+            </div>
+            <nav class="sidebar-nav">
+                <button class="nav-item active" data-page="dashboard">📊 数据概览</button>
+                <button class="nav-item" data-page="categories">🏷️ 分类管理</button>
+                <button class="nav-item" data-page="assets">📦 资产管理</button>
+                <button class="nav-item" data-page="cdks">🔑 CDK 管理</button>
+                <button class="nav-item" data-page="logs">📋 兑换记录</button>
+            </nav>
+            <div class="sidebar-footer">
+                <a href="/" class="back-link">← 返回兑换页</a>
+                <button id="logout-btn" class="logout-btn">退出登录</button>
+            </div>
+        </aside>
+
+        <!-- 内容区 -->
+        <main class="main-area">
+            <!-- 数据概览 -->
+            <div id="page-dashboard" class="page active">
+                <h1 class="page-title">数据概览</h1>
+                <div class="stats-grid" id="stats-grid"></div>
+                <div class="section-card">
+                    <h3>最近兑换</h3>
+                    <div id="recent-logs" class="table-wrap"></div>
+                </div>
+            </div>
+
+            <!-- 分类管理 -->
+            <div id="page-categories" class="page">
+                <div class="page-header">
+                    <h1 class="page-title">分类管理</h1>
+                    <button id="add-cat-btn" class="primary-btn">+ 新增分类</button>
+                </div>
+                <div id="cat-form" class="section-card hidden">
+                    <h3 id="cat-form-title">新增分类</h3>
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label>分类名称</label>
+                            <input type="text" id="cat-name" placeholder="输入分类名称" required>
+                        </div>
+                        <div class="form-group">
+                            <label>颜色</label>
+                            <input type="color" id="cat-color" value="#8b5cf6">
+                        </div>
+                        <div class="form-group">
+                            <label>描述</label>
+                            <input type="text" id="cat-desc" placeholder="分类描述...">
+                        </div>
+                        <div class="form-group">
+                            <label>排序 (数字越小越靠前)</label>
+                            <input type="number" id="cat-sort" value="0">
+                        </div>
+                    </div>
+                    <div class="form-actions">
+                        <button id="cat-cancel-btn" class="ghost-btn">取消</button>
+                        <button id="cat-save-btn" class="primary-btn">保存</button>
+                    </div>
+                </div>
+                <div class="section-card">
+                    <div class="table-wrap" id="cats-table"></div>
+                </div>
+            </div>
+
+            <!-- 资产管理 -->
+            <div id="page-assets" class="page">
+                <div class="page-header">
+                    <h1 class="page-title">资产管理</h1>
+                    <button id="add-asset-btn" class="primary-btn">+ 新增资产</button>
+                </div>
+                <!-- 新增资产表单 -->
+                <div id="asset-form" class="section-card hidden">
+                    <h3 id="asset-form-title">新增资产</h3>
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label>资产名称</label>
+                            <input type="text" id="asset-name" placeholder="输入资产名称" required>
+                        </div>
+                        <div class="form-group">
+                            <label>类型</label>
+                            <select id="asset-type">
+                                <option value="text">📝 文本</option>
+                                <option value="file">📁 文件</option>
+                                <option value="link">🔗 链接</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>分类</label>
+                            <select id="asset-category-id"><option value="">-- 未分类 --</option></select>
+                        </div>
+                        <div class="form-group">
+                            <label>描述</label>
+                            <textarea id="asset-desc" placeholder="资产描述..." rows="2"></textarea>
+                        </div>
+                        <div class="form-group" id="asset-content-group">
+                            <label id="asset-content-label">文本内容</label>
+                            <textarea id="asset-content" placeholder="输入文本内容..." rows="5"></textarea>
+                        </div>
+                        <div class="form-group hidden" id="asset-file-group">
+                            <label>上传文件</label>
+                            <input type="file" id="asset-file">
+                        </div>
+                        <div class="form-group hidden" id="asset-files-group">
+                            <label>批量上传 JSON 文件</label>
+                            <div class="codex-drop-zone" id="codex-drop-zone">
+                                <div class="drop-icon">📂</div>
+                                <div class="drop-text">拖拽 JSON 文件到这里，或点击选择</div>
+                                <div class="drop-hint">支持多个文件，自动以 email 字段命名资产</div>
+                                <input type="file" id="asset-files" multiple accept=".json" style="display:none">
+                            </div>
+                            <div id="codex-file-list" class="codex-file-list"></div>
+                        </div>
+                        <div id="codex-mode-hint" class="codex-mode-hint hidden">
+                            ⚡ Codex 模式：类型已锁定为文件，支持批量上传 JSON
+                        </div>
+                    </div>
+                    <div class="form-actions">
+                        <button id="asset-cancel-btn" class="ghost-btn">取消</button>
+                        <button id="asset-save-btn" class="primary-btn">保存</button>
+                    </div>
+                </div>
+                <div id="assets-list" class="section-card">
+                    <div class="table-wrap" id="assets-table"></div>
+                </div>
+            </div>
+
+            <!-- CDK 管理 -->
+            <div id="page-cdks" class="page">
+                <div class="page-header">
+                    <h1 class="page-title">CDK 管理</h1>
+                    <button id="gen-cdk-btn" class="primary-btn">+ 生成 CDK</button>
+                </div>
+                <div id="cdk-form" class="section-card hidden">
+                    <h3>批量生成 CDK</h3>
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label>分类</label>
+                            <select id="cdk-category-id"></select>
+                        </div>
+                        <div class="form-group">
+                            <label>生成数量</label>
+                            <input type="number" id="cdk-count" value="10" min="1" max="1000">
+                        </div>
+                        <div class="form-group">
+                            <label>前缀</label>
+                            <input type="text" id="cdk-prefix" value="CDK" maxlength="10">
+                        </div>
+                        <div class="form-group">
+                            <label>每码可兑换资产数</label>
+                            <input type="number" id="cdk-max-uses" value="1" min="1">
+                        </div>
+                        <div class="form-group">
+                            <label>备注</label>
+                            <input type="text" id="cdk-note" placeholder="批次备注...">
+                        </div>
+                    </div>
+                    <div class="form-actions">
+                        <button id="cdk-cancel-btn" class="ghost-btn">取消</button>
+                        <button id="cdk-save-btn" class="primary-btn">生成</button>
+                    </div>
+                </div>
+                <div class="section-card">
+                    <div class="filter-bar">
+                        <select id="cdk-filter-category"><option value="">全部分类</option></select>
+                        <select id="cdk-filter-status">
+                            <option value="">全部状态</option>
+                            <option value="active">可用</option>
+                            <option value="used">已用</option>
+                            <option value="disabled">已禁用</option>
+                        </select>
+                    </div>
+                    <div class="table-wrap" id="cdks-table"></div>
+                </div>
+            </div>
+
+            <!-- 兑换记录 -->
+            <div id="page-logs" class="page">
+                <h1 class="page-title">兑换记录</h1>
+                <div class="section-card">
+                    <div class="table-wrap" id="logs-table"></div>
+                </div>
+            </div>
+        </main>
+    </div>
+    <!-- 资产预览模态框 -->
+    <div id="asset-modal" class="modal-overlay hidden">
+        <div class="modal-card">
+            <div class="modal-header">
+                <div>
+                    <h3 id="modal-title" class="modal-title">资产预览</h3>
+                    <div id="modal-meta" class="modal-meta"></div>
+                </div>
+                <div class="modal-actions">
+                    <button id="modal-copy-btn" class="ghost-btn modal-copy-btn">📋 复制</button>
+                    <button id="modal-close-btn" class="modal-close">✕</button>
+                </div>
+            </div>
+            <div id="modal-body" class="modal-body">
+                <pre id="modal-content" class="modal-content"></pre>
+            </div>
+        </div>
+    </div>
+
+    <script src="/admin/app.js"></script>
+</body>
+</html>

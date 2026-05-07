@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 
 from server.database import init_db
 from server.routes import admin, assets, categories, cdks, redeem
@@ -57,6 +58,12 @@ UPLOAD_DIR = os.path.join(BASE_DIR, "server", "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(os.path.join(BASE_DIR, "public"), exist_ok=True)
 os.makedirs(os.path.join(BASE_DIR, "admin"), exist_ok=True)
+
+
+@app.get("/admin", include_in_schema=False)
+def admin_index_redirect():
+    return RedirectResponse(url="/admin/", status_code=308)
+
 
 app.mount("/admin", StaticFiles(directory=os.path.join(BASE_DIR, "admin"), html=True), name="admin")
 app.mount("/", StaticFiles(directory=os.path.join(BASE_DIR, "public"), html=True), name="public")

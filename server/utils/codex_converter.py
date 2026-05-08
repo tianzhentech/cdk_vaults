@@ -5,6 +5,7 @@ CPA JSON → Sub2API 格式
 
 import json
 import base64
+import re
 from datetime import datetime, timezone
 
 
@@ -66,3 +67,71 @@ def wrap_sub2api(accounts: list) -> dict:
         "proxies": [],
         "accounts": accounts,
     }
+
+
+def _normalize_key(key) -> str:
+    return re.sub(r"[\s_\-]+", "", str(key).strip().lower())
+
+
+def _first_nested_value(data, keys: tuple[str, ...]):
+    normalized_keys = [_normalize_key(key) for key in keys]
+
+    if isinstance(data, dict):
+        normalized_map = {_normalize_key(key): value for key, value in data.items()}
+        for key in normalized_keys:
+            value = normalized_map.get(key)
+            if value not in (None, ""):
+                return value
+        for value in data.values():
+            found = _first_nested_value(value, keys)
+            if found not in (None, ""):
+                return found
+
+    if isinstance(data, list):
+        for item in data:
+            found = _first_nested_value(item, keys)
+            if found not in (None, ""):
+                return found
+
+    return ""
+
+
+def _line_part(value) -> str:
+    return str(value or "").strip().replace("\r", " ").replace("\n", " ")
+
+
+def cpa_to_text_line(cpa: dict) -> str:
+    """导出为: 邮箱----GPT密码----邮箱密码"""
+    email = _first_nested_value(cpa, ("email", "mail", "邮箱"))
+    gpt_password = _first_nested_value(
+        cpa,
+        (
+            "gpt_password",
+            "chatgpt_password",
+            "openai_password",
+            "account_password",
+            "account_pass",
+            "password",
+            "passwd",
+            "pass",
+            "gpt密码",
+            "GPT密码",
+            "密码",
+        ),
+    )
+    mail_password = _first_nested_value(
+        cpa,
+        (
+            "email_password",
+            "email_pass",
+            "email_pwd",
+            "mail_password",
+            "mail_pass",
+            "mail_pwd",
+            "imap_password",
+            "smtp_password",
+            "邮箱密码",
+            "邮件密码",
+        ),
+    )
+    return "----".join((_line_part(email), _line_part(gpt_password), _line_part(mail_password)))

@@ -226,14 +226,14 @@ body {
 }
 @keyframes slideDown {
     from { opacity: 0; max-height: 0; margin-bottom: 0; }
-    to   { opacity: 1; max-height: 200px; margin-bottom: 20px; }
+    to   { opacity: 1; max-height: 420px; margin-bottom: 20px; }
 }
 .format-label {
     font-size: 0.85rem; font-weight: 600; color: var(--text-secondary);
     margin-bottom: 10px;
 }
 .format-options {
-    display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;
 }
 .format-option {
     cursor: pointer; position: relative;
@@ -444,6 +444,58 @@ body {
     font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;
 }
 
+/* 文本导出 */
+.text-export-result {
+    background: rgba(255,255,255,0.025);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+}
+.text-export-toolbar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px;
+    border-bottom: 1px solid var(--border-color);
+    background: rgba(255,255,255,0.03);
+}
+.text-export-meta {
+    flex: 1;
+    min-width: 0;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.text-export-btn {
+    border: 1px solid rgba(16, 185, 129, 0.35);
+    background: rgba(16, 185, 129, 0.12);
+    color: var(--accent-emerald);
+    border-radius: var(--radius-sm);
+    padding: 8px 14px;
+    font: inherit;
+    font-size: 0.84rem;
+    font-weight: 700;
+    cursor: pointer;
+}
+.text-export-btn.secondary {
+    border-color: rgba(59, 130, 246, 0.35);
+    background: rgba(59, 130, 246, 0.1);
+    color: var(--accent-blue);
+}
+.text-export-content {
+    margin: 0;
+    padding: 18px;
+    max-height: 420px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
+    line-height: 1.65;
+}
+
 /* 文本资产 */
 .asset-text-content {
     background: var(--bg-secondary);
@@ -506,6 +558,9 @@ body {
     .navbar { padding: 16px 20px; }
     .hero-title { font-size: 1.75rem; }
     .format-options { grid-template-columns: 1fr; }
+    .text-export-toolbar { align-items: stretch; flex-direction: column; }
+    .text-export-meta { width: 100%; }
+    .text-export-btn { width: 100%; }
     .redeem-btn { width: 100%; }
     .redeem-card { padding: 24px 16px; }
     .result-card { padding: 32px 20px; }

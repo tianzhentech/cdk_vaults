@@ -85,8 +85,10 @@ class CDKGenerate(BaseModel):
 class CDKResponse(BaseModel):
     id: int
     code: str
-    asset_id: int
+    asset_id: Optional[int] = None
     asset_name: Optional[str] = None
+    category_id: Optional[int] = None
+    category_name: Optional[str] = None
     status: str
     max_uses: int
     used_count: int
@@ -111,7 +113,7 @@ class RedeemRequest(BaseModel):
 
 class CodexRedeemRequest(BaseModel):
     codes: list[str] = Field(..., min_length=1, description="CDK兑换码列表")
-    format: str = Field(default="cpa", pattern="^(cpa|sub2api_single|sub2api_multi)$", description="导出格式")
+    format: str = Field(default="cpa", pattern="^(cpa|sub2api_single|sub2api_multi|text)$", description="导出格式")
     quantity: int = Field(default=1, ge=1, le=1000, description="每个CDK本次导出资产数量")
 
 
@@ -122,6 +124,7 @@ class RedeemResponse(BaseModel):
     assets: list[AssetResponse] = []
     redeemed_count: int = 0
     remaining_count: int = 0
+    inventory_count: int = 0
     total_count: int = 0
 
 

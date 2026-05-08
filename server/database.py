@@ -40,6 +40,74 @@ def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
     return any(row["name"] == column for row in conn.execute(f"PRAGMA table_info({table})").fetchall())
 
 
+def _migrate_cdk_codes_schema(conn: sqlite3.Connection):
+    """Allow CDKs to exist before assets are assigned and store their category directly."""
+    columns = conn.execute("PRAGMA table_info(cdk_codes)").fetchall()
+    if not columns:
+        return
+
+    column_names = {row["name"] for row in columns}
+    asset_id_notnull = any(row["name"] == "asset_id" and row["notnull"] for row in columns)
+    if "category_id" in column_names and not asset_id_notnull:
+        conn.execute("""
+            UPDATE cdk_codes
+            SET category_id = COALESCE(
+                category_id,
+                (SELECT a.category_id FROM assets a WHERE a.id = cdk_codes.asset_id)
+            )
+        """)
+        return
+
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute("PRAGMA legacy_alter_table=ON")
+    conn.execute("ALTER TABLE cdk_codes RENAME TO cdk_codes_old")
+    conn.execute("""
+        CREATE TABLE cdk_codes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            code TEXT NOT NULL UNIQUE,
+            asset_id INTEGER,
+            category_id INTEGER,
+            status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'used', 'disabled', 'expired')),
+            max_uses INTEGER DEFAULT 1,
+            used_count INTEGER DEFAULT 0,
+            note TEXT DEFAULT '',
+            expires_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE SET NULL,
+            FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL
+        )
+    """)
+
+    old_columns = {row["name"] for row in conn.execute("PRAGMA table_info(cdk_codes_old)").fetchall()}
+    category_expr = (
+        "category_id"
+        if "category_id" in old_columns
+        else "(SELECT a.category_id FROM assets a WHERE a.id = cdk_codes_old.asset_id)"
+    )
+    conn.execute(f"""
+        INSERT INTO cdk_codes (
+            id, code, asset_id, category_id, status, max_uses,
+            used_count, note, expires_at, created_at
+        )
+        SELECT
+            id, code, asset_id, {category_expr}, status, max_uses,
+            used_count, note, expires_at, created_at
+        FROM cdk_codes_old
+    """)
+    conn.execute("DROP TABLE cdk_codes_old")
+    conn.execute("PRAGMA legacy_alter_table=OFF")
+    conn.execute("PRAGMA foreign_keys=ON")
+
+
+def _ensure_cdk_indexes(conn: sqlite3.Connection):
+    conn.executescript("""
+        CREATE INDEX IF NOT EXISTS idx_cdk_code ON cdk_codes(code);
+        CREATE INDEX IF NOT EXISTS idx_cdk_status ON cdk_codes(status);
+        CREATE INDEX IF NOT EXISTS idx_cdk_asset ON cdk_codes(asset_id);
+        CREATE INDEX IF NOT EXISTS idx_cdk_category ON cdk_codes(category_id);
+    """)
+
+
 def init_db():
     """初始化数据库表结构"""
     os.makedirs(os.path.join(BASE_DIR, "uploads"), exist_ok=True)
@@ -73,14 +141,16 @@ def init_db():
         CREATE TABLE IF NOT EXISTS cdk_codes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             code TEXT NOT NULL UNIQUE,
-            asset_id INTEGER NOT NULL,
+            asset_id INTEGER,
+            category_id INTEGER,
             status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'used', 'disabled', 'expired')),
             max_uses INTEGER DEFAULT 1,
             used_count INTEGER DEFAULT 0,
             note TEXT DEFAULT '',
             expires_at TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE CASCADE
+            FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE SET NULL,
+            FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL
         );
 
         CREATE TABLE IF NOT EXISTS redemption_logs (
@@ -117,9 +187,6 @@ def init_db():
             UNIQUE (cdk_id, asset_id)
         );
 
-        CREATE INDEX IF NOT EXISTS idx_cdk_code ON cdk_codes(code);
-        CREATE INDEX IF NOT EXISTS idx_cdk_status ON cdk_codes(status);
-        CREATE INDEX IF NOT EXISTS idx_cdk_asset ON cdk_codes(asset_id);
         CREATE INDEX IF NOT EXISTS idx_log_cdk ON redemption_logs(cdk_id);
         CREATE INDEX IF NOT EXISTS idx_log_time ON redemption_logs(redeemed_at);
         CREATE INDEX IF NOT EXISTS idx_asset_category ON assets(category_id);
@@ -129,6 +196,9 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_cdk_assets_asset ON cdk_assets(asset_id);
         CREATE INDEX IF NOT EXISTS idx_cdk_assets_consumed ON cdk_assets(consumed_at);
     """)
+
+    _migrate_cdk_codes_schema(conn)
+    _ensure_cdk_indexes(conn)
 
     if not _column_exists(conn, "assets", "consumed_at"):
         conn.execute("ALTER TABLE assets ADD COLUMN consumed_at TIMESTAMP")
@@ -141,6 +211,13 @@ def init_db():
         SELECT id, asset_id, CASE WHEN used_count > 0 THEN CURRENT_TIMESTAMP ELSE NULL END
         FROM cdk_codes
         WHERE asset_id IS NOT NULL
+    """)
+    conn.execute("""
+        UPDATE cdk_codes
+        SET category_id = COALESCE(
+            category_id,
+            (SELECT a.category_id FROM assets a WHERE a.id = cdk_codes.asset_id)
+        )
     """)
     conn.execute("""
         UPDATE assets

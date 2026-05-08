@@ -18,6 +18,7 @@
     const formatSelector = $('#format-selector');
     const quotaPanel = $('#quota-panel');
     const quotaRemaining = $('#quota-remaining');
+    const quotaInventory = $('#quota-inventory');
     const quantityInput = $('#redeem-quantity');
     const quantityMinus = $('#quantity-minus');
     const quantityPlus = $('#quantity-plus');
@@ -27,6 +28,7 @@
     let lastDetectedCode = '';
     let detectedRemaining = 0;
     let detectedTotal = 0;
+    let detectedInventory = 0;
 
     // ── 格式选择器交互 ───────────────────────────
     $$('.format-option input').forEach(radio => {
@@ -70,7 +72,7 @@
         clearTimeout(detectTimer);
         if (!codes.length) {
             setCodexMode(false);
-            setQuotaInfo(0, 0);
+            setQuotaInfo(0, 0, false, 0);
             lastDetectedCode = '';
             return;
         }
@@ -89,8 +91,16 @@
                 const data = await res.json();
                 lastDetectedCode = firstCode;
                 setCodexMode(data.is_codex === true);
-                if (data.found) setQuotaInfo(data.remaining_count || 0, data.total_count || 0);
-                else setQuotaInfo(0, 0);
+                if (data.found) {
+                    setQuotaInfo(
+                        data.remaining_count || 0,
+                        data.total_count || 0,
+                        true,
+                        data.inventory_count ?? data.remaining_count ?? 0,
+                    );
+                } else {
+                    setQuotaInfo(0, 0, false, 0);
+                }
             } catch (_) {
                 // 静默失败
             }
@@ -117,28 +127,53 @@
         }
     }
 
-    function setQuotaInfo(remaining, total) {
+    function setQuotaInfo(remaining, total, forceShow = false, inventory = remaining) {
         detectedRemaining = Math.max(0, parseInt(remaining) || 0);
         detectedTotal = Math.max(detectedRemaining, parseInt(total) || 0);
-        if (detectedRemaining > 0) {
+        detectedInventory = Math.max(0, parseInt(inventory) || 0);
+        if (forceShow || detectedTotal > 0) {
             quotaPanel.classList.remove('hidden');
             quotaRemaining.textContent = `${detectedRemaining} / ${detectedTotal}`;
-            quantityInput.max = String(detectedRemaining);
-            if ((parseInt(quantityInput.value) || 1) > detectedRemaining) {
-                quantityInput.value = String(detectedRemaining);
+            quotaInventory.textContent = String(detectedInventory);
+            const redeemLimit = Math.min(detectedRemaining, detectedInventory);
+            const empty = redeemLimit <= 0;
+            quantityInput.min = empty ? '0' : '1';
+            quantityInput.max = String(empty ? 0 : redeemLimit);
+            if (empty) {
+                quantityInput.value = '0';
+            } else {
+                if ((parseInt(quantityInput.value) || 1) > redeemLimit) {
+                    quantityInput.value = String(redeemLimit);
+                }
+                if ((parseInt(quantityInput.value) || 0) < 1) quantityInput.value = '1';
             }
-            if ((parseInt(quantityInput.value) || 0) < 1) quantityInput.value = '1';
+            quantityInput.disabled = empty;
+            quantityMinus.disabled = empty;
+            quantityPlus.disabled = empty;
         } else {
             quotaPanel.classList.add('hidden');
             quotaRemaining.textContent = `0 / ${detectedTotal}`;
+            quotaInventory.textContent = '0';
+            quantityInput.min = '1';
             quantityInput.max = '1';
             quantityInput.value = '1';
+            quantityInput.disabled = false;
+            quantityMinus.disabled = false;
+            quantityPlus.disabled = false;
         }
         updateRedeemButton(parseCodes());
     }
 
     function clampQuantity() {
-        const max = Math.max(1, detectedRemaining || 1);
+        const knownQuota = detectedTotal > 0;
+        const limit = knownQuota
+            ? Math.min(detectedRemaining, detectedInventory)
+            : (parseInt(quantityInput.max) || 1);
+        if (knownQuota && limit <= 0) {
+            quantityInput.value = '0';
+            return;
+        }
+        const max = Math.max(1, limit);
         let value = parseInt(quantityInput.value) || 1;
         value = Math.min(Math.max(value, 1), max);
         quantityInput.value = String(value);
@@ -156,7 +191,8 @@
     }
 
     function updateRedeemButton(codes = parseCodes()) {
-        redeemBtn.disabled = codes.length === 0 || (detectedTotal > 0 && detectedRemaining <= 0);
+        redeemBtn.disabled = codes.length === 0
+            || (detectedTotal > 0 && (detectedRemaining <= 0 || detectedInventory <= 0));
     }
 
     // ── 兑换逻辑 ─────────────────────────────────
@@ -198,14 +234,32 @@
             return;
         }
 
+        const redeemedCount = parseInt(res.headers.get('x-redeemed-count')) || quantity * codes.length;
+        const remainingCount = parseInt(res.headers.get('x-remaining-count')) || 0;
+
+        if (format === 'text') {
+            const data = await res.json();
+            setQuotaInfo(
+                data.remaining_count ?? remainingCount,
+                detectedTotal,
+                true,
+                data.inventory_count ?? 0,
+            );
+            showTextResult({
+                text: data.text || '',
+                filename: data.filename || 'codex_accounts.txt',
+                count: data.redeemed_count || redeemedCount,
+                remainingCount: data.remaining_count ?? remainingCount,
+            });
+            return;
+        }
+
         // 文件下载
         const blob = await res.blob();
         const disposition = res.headers.get('content-disposition') || '';
         let filename = 'download';
         const match = disposition.match(/filename="?([^"]+)"?/);
         if (match) filename = match[1];
-        const redeemedCount = parseInt(res.headers.get('x-redeemed-count')) || quantity * codes.length;
-        const remainingCount = parseInt(res.headers.get('x-remaining-count')) || 0;
 
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
@@ -213,7 +267,8 @@
         a.click();
         URL.revokeObjectURL(a.href);
 
-        setQuotaInfo(remainingCount, detectedTotal);
+        const inventoryCount = parseInt(res.headers.get('x-inventory-count')) || 0;
+        setQuotaInfo(remainingCount, detectedTotal, true, inventoryCount);
         showDownloadResult(redeemedCount, filename, format, remainingCount);
     }
 
@@ -229,7 +284,12 @@
             showError(data.detail || '兑换失败');
             return;
         }
-        setQuotaInfo(data.remaining_count || 0, data.total_count || detectedTotal);
+        setQuotaInfo(
+            data.remaining_count ?? 0,
+            data.total_count || detectedTotal,
+            true,
+            data.inventory_count ?? 0,
+        );
         showResult(data);
     }
 
@@ -239,6 +299,7 @@
             cpa: 'CPA 原格式',
             sub2api_single: 'Sub2API 合并文件',
             sub2api_multi: 'Sub2API 独立文件',
+            text: '文本格式',
         };
         resultName.textContent = `已兑换 ${count} 个资产 · 剩余 ${remainingCount} 个`;
         resultBody.innerHTML = `
@@ -252,6 +313,69 @@
         `;
         redeemSection.classList.add('hidden');
         resultSection.classList.remove('hidden');
+    }
+
+    function showTextResult({ text, filename, count, remainingCount = 0 }) {
+        resultName.textContent = `已兑换 ${count} 个资产 · 剩余 ${remainingCount} 个`;
+
+        const box = document.createElement('div');
+        box.className = 'text-export-result';
+
+        const toolbar = document.createElement('div');
+        toolbar.className = 'text-export-toolbar';
+
+        const meta = document.createElement('div');
+        meta.className = 'text-export-meta';
+        meta.textContent = filename;
+
+        const copyBtn = document.createElement('button');
+        copyBtn.className = 'text-export-btn';
+        copyBtn.textContent = '复制';
+        copyBtn.addEventListener('click', async () => {
+            await copyText(text);
+            copyBtn.textContent = '已复制';
+            setTimeout(() => copyBtn.textContent = '复制', 1800);
+        });
+
+        const downloadBtn = document.createElement('button');
+        downloadBtn.className = 'text-export-btn secondary';
+        downloadBtn.textContent = '下载 TXT';
+        downloadBtn.addEventListener('click', () => downloadTextFile(text, filename));
+
+        const pre = document.createElement('pre');
+        pre.className = 'text-export-content';
+        pre.textContent = text || '没有可导出的文本';
+
+        toolbar.append(meta, copyBtn, downloadBtn);
+        box.append(toolbar, pre);
+        resultBody.innerHTML = '';
+        resultBody.appendChild(box);
+        redeemSection.classList.add('hidden');
+        resultSection.classList.remove('hidden');
+    }
+
+    function downloadTextFile(text, filename) {
+        const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = filename || 'codex_accounts.txt';
+        a.click();
+        URL.revokeObjectURL(a.href);
+    }
+
+    async function copyText(text) {
+        if (navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(text);
+            return;
+        }
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        textarea.remove();
     }
 
     // ── 显示普通结果 ─────────────────────────────

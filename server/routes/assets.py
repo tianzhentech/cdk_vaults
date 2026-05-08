@@ -19,6 +19,7 @@ from fastapi.responses import FileResponse
 from server.models import AssetCreate, AssetUpdate, AssetResponse
 from server.auth import get_current_admin
 from server.database import get_db_context
+from server.utils.cdk_allocator import assign_asset_to_pending_cdk
 
 router = APIRouter()
 
@@ -243,6 +244,7 @@ def create_asset(body: AssetCreate, _admin: str = Depends(get_current_admin)):
             (asset_name, body.type, body.description, body.content, cat_id, now, now),
         )
         asset_id = cursor.lastrowid
+        assign_asset_to_pending_cdk(db, asset_id, cat_id)
         row = db.execute("""
             SELECT a.*, c.name as category_name FROM assets a
             LEFT JOIN categories c ON a.category_id = c.id WHERE a.id = ?
@@ -291,6 +293,7 @@ async def upload_asset(
             (asset_name, description, relative_path, cat_id, now, now),
         )
         asset_id = cursor.lastrowid
+        assign_asset_to_pending_cdk(db, asset_id, cat_id)
         row = db.execute("""
             SELECT a.*, c.name as category_name FROM assets a
             LEFT JOIN categories c ON a.category_id = c.id WHERE a.id = ?
@@ -351,6 +354,7 @@ async def upload_batch(
                    VALUES (?, 'file', ?, ?, ?, ?, ?)""",
                 (asset_name, description, relative_path, cat_id, now, now),
             )
+            assign_asset_to_pending_cdk(db, cursor.lastrowid, cat_id)
             row = db.execute("""
                 SELECT a.*, c.name as category_name FROM assets a
                 LEFT JOIN categories c ON a.category_id = c.id WHERE a.id = ?
@@ -410,6 +414,8 @@ def update_asset(asset_id: int, body: AssetUpdate, _admin: str = Depends(get_cur
             set_clause = ", ".join(f"{k} = ?" for k in updates)
             values = list(updates.values()) + [asset_id]
             db.execute(f"UPDATE assets SET {set_clause} WHERE id = ?", values)
+            if body.category_id is not None:
+                assign_asset_to_pending_cdk(db, asset_id, body.category_id)
 
         row = db.execute("""
             SELECT a.*, c.name as category_name FROM assets a

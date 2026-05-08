@@ -14,10 +14,10 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from server.models import RedeemRequest, RedeemResponse, AssetResponse, CodexRedeemRequest
 from server.database import get_db_context
-from server.utils.codex_converter import cpa_to_sub2api_account, wrap_sub2api
+from server.utils.codex_converter import cpa_to_sub2api_account, cpa_to_text_line, wrap_sub2api
 
 router = APIRouter()
 
@@ -52,6 +52,16 @@ def _ensure_cdk_asset_rows(db, cdk):
             "INSERT OR IGNORE INTO cdk_assets (cdk_id, asset_id) VALUES (?, ?)",
             (cdk["id"], cdk["asset_id"]),
         )
+
+
+def _cdk_category_name(db, cdk, asset=None):
+    category_id = cdk["category_id"] if "category_id" in cdk.keys() else None
+    if category_id is None and asset is not None:
+        category_id = asset["category_id"]
+    if category_id is None:
+        return None
+    cat = db.execute("SELECT name FROM categories WHERE id = ?", (category_id,)).fetchone()
+    return cat["name"] if cat else None
 
 
 def _validate_cdk_record(db, code: str):
@@ -99,7 +109,7 @@ def _available_cdk_assets(db, cdk):
 
 
 def _cdk_counts(db, cdk) -> dict:
-    total = db.execute(
+    assigned_total = db.execute(
         "SELECT COUNT(*) FROM cdk_assets WHERE cdk_id = ?",
         (cdk["id"],),
     ).fetchone()[0]
@@ -107,14 +117,22 @@ def _cdk_counts(db, cdk) -> dict:
         "SELECT COUNT(*) FROM cdk_assets WHERE cdk_id = ? AND consumed_at IS NOT NULL",
         (cdk["id"],),
     ).fetchone()[0]
-    remaining = db.execute(
+    inventory = db.execute(
         """SELECT COUNT(*)
            FROM cdk_assets ca
            JOIN assets a ON a.id = ca.asset_id
            WHERE ca.cdk_id = ? AND ca.consumed_at IS NULL AND a.consumed_at IS NULL""",
         (cdk["id"],),
     ).fetchone()[0]
-    return {"total": total, "used": used, "remaining": remaining}
+    quota_total = max(int(cdk["max_uses"] or 1), assigned_total, used)
+    remaining = max(quota_total - used, 0)
+    return {
+        "total": quota_total,
+        "assigned": assigned_total,
+        "inventory": inventory,
+        "used": used,
+        "remaining": remaining,
+    }
 
 
 def _asset_category_name(db, asset):
@@ -146,7 +164,9 @@ def _validate_cdk(db, code: str, request: Request) -> tuple:
     cdk = _validate_cdk_record(db, code)
     assets = _available_cdk_assets(db, cdk)
     if not assets:
-        db.execute("UPDATE cdk_codes SET status = 'used' WHERE id = ?", (cdk["id"],))
+        counts = _cdk_counts(db, cdk)
+        if counts["used"] >= counts["total"]:
+            db.execute("UPDATE cdk_codes SET status = 'used' WHERE id = ?", (cdk["id"],))
         raise HTTPException(status_code=400, detail=f"兑换码 {code} 已无可兑换资产")
 
     return cdk, assets[0]
@@ -176,13 +196,8 @@ def _consume_cdk(db, cdk, asset, request: Request):
         "SELECT COUNT(*) FROM cdk_assets WHERE cdk_id = ? AND consumed_at IS NOT NULL",
         (cdk["id"],),
     ).fetchone()[0]
-    remaining_count = db.execute(
-        """SELECT COUNT(*)
-           FROM cdk_assets ca
-           JOIN assets a ON a.id = ca.asset_id
-           WHERE ca.cdk_id = ? AND ca.consumed_at IS NULL AND a.consumed_at IS NULL""",
-        (cdk["id"],),
-    ).fetchone()[0]
+    total_count = max(int(cdk["max_uses"] or 1), used_count)
+    remaining_count = max(total_count - used_count, 0)
     new_status = "used" if remaining_count == 0 else "active"
     db.execute(
         "UPDATE cdk_codes SET used_count = ?, status = ? WHERE id = ?",
@@ -229,20 +244,16 @@ def detect_cdk(body: RedeemRequest):
             cdk = _validate_cdk_record(db, code)
         except HTTPException:
             return {"found": False, "category_name": None, "is_codex": False}
-        assets = _available_cdk_assets(db, cdk)
-        if not assets:
-            return {"found": False, "category_name": None, "is_codex": False}
-        asset = assets[0]
         counts = _cdk_counts(db, cdk)
-        if not asset["category_id"]:
-            cat_name = None
-        else:
-            cat_name = _asset_category_name(db, asset)
+        assets = _available_cdk_assets(db, cdk)
+        asset = assets[0] if assets else None
+        cat_name = _cdk_category_name(db, cdk, asset)
         return {
             "found": True,
             "category_name": cat_name,
             "is_codex": cat_name == CODEX_CATEGORY_NAME,
             "remaining_count": counts["remaining"],
+            "inventory_count": counts["inventory"],
             "used_count": counts["used"],
             "total_count": counts["total"],
         }
@@ -258,10 +269,16 @@ def redeem_cdk(body: RedeemRequest, request: Request):
         cdk = _validate_cdk_record(db, code)
         available_assets = _available_cdk_assets(db, cdk)
         if not available_assets:
-            db.execute("UPDATE cdk_codes SET status = 'used' WHERE id = ?", (cdk["id"],))
-            raise HTTPException(status_code=400, detail=f"兑换码 {code} 已无可兑换资产")
+            counts = _cdk_counts(db, cdk)
+            if counts["used"] >= counts["total"]:
+                db.execute("UPDATE cdk_codes SET status = 'used' WHERE id = ?", (cdk["id"],))
+                raise HTTPException(status_code=400, detail=f"兑换码 {code} 已无可兑换资产")
+            raise HTTPException(
+                status_code=400,
+                detail=f"兑换码 {code} 暂无可兑换库存，理论剩余 {counts['remaining']} / {counts['total']} 个",
+            )
         if body.quantity > len(available_assets):
-            raise HTTPException(status_code=400, detail=f"剩余可兑换资产不足，仅剩 {len(available_assets)} 个")
+            raise HTTPException(status_code=400, detail=f"当前库存不足，仅剩 {len(available_assets)} 个")
 
         redeemed_assets = []
         for asset in available_assets[:body.quantity]:
@@ -278,6 +295,7 @@ def redeem_cdk(body: RedeemRequest, request: Request):
         assets=redeemed_assets,
         redeemed_count=len(redeemed_assets),
         remaining_count=counts["remaining"],
+        inventory_count=counts["inventory"],
         total_count=counts["total"],
     )
 
@@ -339,10 +357,16 @@ def redeem_codex(body: CodexRedeemRequest, request: Request):
             cdk = _validate_cdk_record(db, code)
             assets = _available_cdk_assets(db, cdk)
             if not assets:
-                db.execute("UPDATE cdk_codes SET status = 'used' WHERE id = ?", (cdk["id"],))
-                raise HTTPException(status_code=400, detail=f"兑换码 {code} 已无可兑换资产")
+                counts = _cdk_counts(db, cdk)
+                if counts["used"] >= counts["total"]:
+                    db.execute("UPDATE cdk_codes SET status = 'used' WHERE id = ?", (cdk["id"],))
+                    raise HTTPException(status_code=400, detail=f"兑换码 {code} 已无可兑换资产")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"兑换码 {code} 暂无可兑换库存，理论剩余 {counts['remaining']} / {counts['total']} 个",
+                )
             if body.quantity > len(assets):
-                raise HTTPException(status_code=400, detail=f"兑换码 {code} 剩余可兑换资产不足，仅剩 {len(assets)} 个")
+                raise HTTPException(status_code=400, detail=f"兑换码 {code} 当前库存不足，仅剩 {len(assets)} 个")
 
             for asset in assets[:body.quantity]:
                 # 验证是否属于 Codex 分类
@@ -360,12 +384,15 @@ def redeem_codex(body: CodexRedeemRequest, request: Request):
         for cdk, asset, _ in cpa_items:
             _consume_cdk(db, cdk, asset, request)
         cdk_by_id = {cdk["id"]: cdk for cdk, _, _ in cpa_items}
-        remaining_count = sum(_cdk_counts(db, cdk)["remaining"] for cdk in cdk_by_id.values())
+        cdk_counts = [_cdk_counts(db, cdk) for cdk in cdk_by_id.values()]
+        remaining_count = sum(counts["remaining"] for counts in cdk_counts)
+        inventory_count = sum(counts["inventory"] for counts in cdk_counts)
 
     # ── 生成下载 ──────────────────────────────────
     response_headers = {
         "X-Redeemed-Count": str(len(cpa_items)),
         "X-Remaining-Count": str(remaining_count),
+        "X-Inventory-Count": str(inventory_count),
     }
     if fmt == "cpa":
         return _export_cpa(cpa_items, response_headers)
@@ -373,6 +400,8 @@ def redeem_codex(body: CodexRedeemRequest, request: Request):
         return _export_sub2api_single(cpa_items, response_headers)
     elif fmt == "sub2api_multi":
         return _export_sub2api_multi(cpa_items, response_headers)
+    elif fmt == "text":
+        return _export_text(cpa_items, response_headers)
 
 
 def _with_headers(headers: dict, disposition: str) -> dict:
@@ -400,6 +429,10 @@ def _zip_filename(base: str, date_suffix: str, count: int) -> str:
 
 def _sub2api_all_filename(date_suffix: str, count: int) -> str:
     return f"sub2api_all_in_one_{date_suffix}_{count}.json"
+
+
+def _text_filename(date_suffix: str, count: int) -> str:
+    return f"codex_accounts_{date_suffix}_{count}.txt"
 
 
 def _export_cpa(items: list, headers: dict | None = None) -> StreamingResponse:
@@ -473,4 +506,23 @@ def _export_sub2api_multi(items: list, headers: dict | None = None) -> Streaming
         buf,
         media_type="application/zip",
         headers=_with_headers(headers, f'attachment; filename="{_zip_filename("sub2api_pack", date_suffix, len(converted))}"'),
+    )
+
+
+def _export_text(items: list, headers: dict | None = None) -> JSONResponse:
+    """文本格式: 邮箱----GPT密码----邮箱密码，一行一个。"""
+    headers = headers or {}
+    date_suffix = _export_date_suffix()
+    text = "\n".join(cpa_to_text_line(cpa) for _, _, cpa in items)
+    return JSONResponse(
+        {
+            "success": True,
+            "format": "text",
+            "filename": _text_filename(date_suffix, len(items)),
+            "text": text,
+            "redeemed_count": len(items),
+            "remaining_count": int(headers.get("X-Remaining-Count", 0)),
+            "inventory_count": int(headers.get("X-Inventory-Count", 0)),
+        },
+        headers=headers,
     )

@@ -22,6 +22,8 @@ def row_to_cdk(row) -> CDKResponse:
         code=row["code"],
         asset_id=row["asset_id"],
         asset_name=row["asset_name"],
+        category_id=row["category_id"] if "category_id" in row.keys() else None,
+        category_name=row["category_name"] if "category_name" in row.keys() else None,
         status=row["status"],
         max_uses=row["max_uses"],
         used_count=row["used_count"],
@@ -66,22 +68,31 @@ def list_cdks(
     with get_db_context() as db:
         base = """
             FROM cdk_codes c
-            JOIN assets a ON c.asset_id = a.id
+            LEFT JOIN assets a ON c.asset_id = a.id
+            LEFT JOIN categories cat ON cat.id = COALESCE(c.category_id, a.category_id)
             WHERE 1=1
         """
         params = []
         if asset_id:
-            base += " AND c.asset_id = ?"
-            params.append(asset_id)
+            base += """
+                AND (
+                    c.asset_id = ?
+                    OR EXISTS (
+                        SELECT 1 FROM cdk_assets ca
+                        WHERE ca.cdk_id = c.id AND ca.asset_id = ?
+                    )
+                )
+            """
+            params.extend([asset_id, asset_id])
         if category_id:
-            base += " AND a.category_id = ?"
+            base += " AND COALESCE(c.category_id, a.category_id) = ?"
             params.append(category_id)
         if status:
             base += " AND c.status = ?"
             params.append(status)
         total = db.execute(f"SELECT COUNT(*) {base}", params).fetchone()[0]
         query = f"""
-            SELECT c.*, a.name as asset_name,
+            SELECT c.*, a.name as asset_name, cat.name as category_name,
                    (SELECT COUNT(*) FROM redemption_logs rl WHERE rl.cdk_id = c.id) AS redemption_count
             {base}
         """
@@ -146,12 +157,6 @@ def generate_cdks(body: CDKGenerate, _admin: str = Depends(get_current_admin)):
             """,
             [*category_params, total_needed],
         ).fetchall()
-        if len(available_assets) < total_needed:
-            raise HTTPException(
-                status_code=400,
-                detail=f"{category_name} 可用资产不足：需要 {total_needed} 个，当前只有 {len(available_assets)} 个未分配资产",
-            )
-
         # 获取已存在的码用于排重
         existing = set(
             r[0] for r in db.execute("SELECT code FROM cdk_codes").fetchall()
@@ -164,25 +169,37 @@ def generate_cdks(body: CDKGenerate, _admin: str = Depends(get_current_admin)):
 
         # 批量插入
         results = []
+        asset_cursor = 0
         for index, code in enumerate(codes):
-            assigned = available_assets[index * asset_quota:(index + 1) * asset_quota]
-            primary_asset = assigned[0]
+            assigned = available_assets[asset_cursor:asset_cursor + asset_quota]
+            asset_cursor += len(assigned)
+            primary_asset = assigned[0] if assigned else None
             cursor = db.execute(
-                """INSERT INTO cdk_codes (code, asset_id, max_uses, note, expires_at)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (code, primary_asset["id"], asset_quota, body.note, body.expires_at),
+                """INSERT INTO cdk_codes (code, asset_id, category_id, max_uses, note, expires_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    code,
+                    primary_asset["id"] if primary_asset else None,
+                    category_id,
+                    asset_quota,
+                    body.note,
+                    body.expires_at,
+                ),
             )
             cdk_id = cursor.lastrowid
-            db.executemany(
-                "INSERT INTO cdk_assets (cdk_id, asset_id) VALUES (?, ?)",
-                [(cdk_id, item["id"]) for item in assigned],
-            )
+            if assigned:
+                db.executemany(
+                    "INSERT INTO cdk_assets (cdk_id, asset_id) VALUES (?, ?)",
+                    [(cdk_id, item["id"]) for item in assigned],
+                )
             results.append(
                 CDKResponse(
                     id=cdk_id,
                     code=code,
-                    asset_id=primary_asset["id"],
-                    asset_name=primary_asset["name"],
+                    asset_id=primary_asset["id"] if primary_asset else None,
+                    asset_name=primary_asset["name"] if primary_asset else None,
+                    category_id=category_id,
+                    category_name=category_name,
                     status="active",
                     max_uses=asset_quota,
                     used_count=0,

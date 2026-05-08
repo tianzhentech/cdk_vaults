@@ -830,7 +830,7 @@
                     const canDelete = c.can_delete !== false;
                     return `<tr>
                     <td><input type="checkbox" class="cdk-chk" value="${c.id}" ${canDelete ? '' : 'disabled'}></td>
-                    <td class="code-text">${esc(c.code)}</td><td>${esc(c.asset_name||'')}</td>
+                    <td class="code-text">${esc(c.code)}</td><td>${esc(c.asset_name||'待补充')}</td>
                     <td><span class="badge badge-${c.status}">${statusLabel(c.status)}</span></td>
                     <td>${c.used_count}/${c.max_uses}</td><td>${esc(c.note)||'-'}</td>
                     <td style="display:flex;gap:6px">

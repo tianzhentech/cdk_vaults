@@ -26,6 +26,37 @@
         toastTimer = setTimeout(() => { root.innerHTML = ''; }, 3200);
     }
 
+    async function copyText(text) {
+        if (!text) return false;
+        if (navigator.clipboard?.writeText && window.isSecureContext) {
+            try {
+                await navigator.clipboard.writeText(text);
+                return true;
+            } catch {
+                // Fall through to the textarea fallback below.
+            }
+        }
+
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'fixed';
+        textarea.style.left = '-9999px';
+        textarea.style.top = '0';
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        textarea.setSelectionRange(0, textarea.value.length);
+
+        try {
+            return document.execCommand('copy');
+        } catch {
+            return false;
+        } finally {
+            textarea.remove();
+        }
+    }
+
     function confirmDialog({ title = '确认操作', message = '', detail = '', confirmText = '确认', cancelText = '取消', danger = true } = {}) {
         return new Promise((resolve) => {
             const overlay = document.createElement('div');
@@ -556,11 +587,13 @@
     assetModal.addEventListener('click', (e) => { if (e.target === assetModal) closeModal(); });
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
 
-    modalCopyBtn.addEventListener('click', () => {
-        navigator.clipboard.writeText(currentModalText).then(() => {
+    modalCopyBtn.addEventListener('click', async () => {
+        if (await copyText(currentModalText)) {
             modalCopyBtn.textContent = '✅ 已复制';
             setTimeout(() => modalCopyBtn.textContent = '📋 复制', 2000);
-        });
+        } else {
+            toast('复制失败，请手动选择内容复制', 'warning');
+        }
     });
 
     function closeModal() {
@@ -935,15 +968,23 @@
         const categoryId = parseInt($('#cdk-category-id').value);
         if (!categoryId) return toast('请选择分类', 'warning');
         try {
-            await api('/cdks/generate', { method: 'POST', body: JSON.stringify({
+            const generated = await api('/cdks/generate', { method: 'POST', body: JSON.stringify({
                 category_id: categoryId, count: parseInt($('#cdk-count').value) || 1,
                 prefix: $('#cdk-prefix').value || 'CDK',
                 max_uses: parseInt($('#cdk-max-uses').value) || 1,
                 note: $('#cdk-note').value,
             })});
+            const codes = (generated || []).map(c => c.code).filter(Boolean);
+            const copied = await copyText(codes.join('\n'));
             $('#cdk-form').classList.add('hidden');
             cdkPage = 1;
             loadCDKs();
+            toast(
+                copied
+                    ? `已生成 ${codes.length} 个 CDK，并已复制到剪贴板`
+                    : `已生成 ${codes.length} 个 CDK，但浏览器阻止了自动复制`,
+                copied ? 'success' : 'warning',
+            );
         } catch (e) { toast(e.message); }
     });
 

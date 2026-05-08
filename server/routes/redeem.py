@@ -55,13 +55,27 @@ def _ensure_cdk_asset_rows(db, cdk):
 
 
 def _cdk_category_name(db, cdk, asset=None):
-    category_id = cdk["category_id"] if "category_id" in cdk.keys() else None
-    if category_id is None and asset is not None:
-        category_id = asset["category_id"]
+    category_id = _cdk_category_id(db, cdk, asset)
     if category_id is None:
         return None
     cat = db.execute("SELECT name FROM categories WHERE id = ?", (category_id,)).fetchone()
     return cat["name"] if cat else None
+
+
+def _cdk_category_id(db, cdk, asset=None):
+    category_id = cdk["category_id"] if "category_id" in cdk.keys() else None
+    if category_id is None and asset is not None:
+        category_id = asset["category_id"]
+    if category_id is None and cdk["asset_id"]:
+        row = db.execute("SELECT category_id FROM assets WHERE id = ?", (cdk["asset_id"],)).fetchone()
+        category_id = row["category_id"] if row else None
+    return category_id
+
+
+def _category_asset_clause(category_id):
+    if category_id is None:
+        return "a.category_id IS NULL", []
+    return "a.category_id = ?", [category_id]
 
 
 def _validate_cdk_record(db, code: str):
@@ -117,22 +131,77 @@ def _cdk_counts(db, cdk) -> dict:
         "SELECT COUNT(*) FROM cdk_assets WHERE cdk_id = ? AND consumed_at IS NOT NULL",
         (cdk["id"],),
     ).fetchone()[0]
-    inventory = db.execute(
+    bound_available = db.execute(
         """SELECT COUNT(*)
            FROM cdk_assets ca
            JOIN assets a ON a.id = ca.asset_id
            WHERE ca.cdk_id = ? AND ca.consumed_at IS NULL AND a.consumed_at IS NULL""",
         (cdk["id"],),
     ).fetchone()[0]
+    category_id = _cdk_category_id(db, cdk)
+    category_clause, category_params = _category_asset_clause(category_id)
+    unassigned_available = db.execute(
+        f"""SELECT COUNT(*)
+            FROM assets a
+            WHERE {category_clause}
+              AND a.consumed_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM cdk_assets ca
+                  WHERE ca.asset_id = a.id AND ca.consumed_at IS NULL
+              )""",
+        category_params,
+    ).fetchone()[0]
     quota_total = max(int(cdk["max_uses"] or 1), assigned_total, used)
     remaining = max(quota_total - used, 0)
     return {
         "total": quota_total,
         "assigned": assigned_total,
-        "inventory": inventory,
+        "available": bound_available,
+        "inventory": bound_available + unassigned_available,
+        "unassigned_inventory": unassigned_available,
         "used": used,
         "remaining": remaining,
     }
+
+
+def _fill_cdk_assets_from_inventory(db, cdk, requested_count: int):
+    """Bind unassigned same-category assets to this CDK when it has free quota."""
+    counts = _cdk_counts(db, cdk)
+    if counts["available"] >= requested_count:
+        return
+
+    slots = max(counts["total"] - counts["assigned"], 0)
+    needed = min(max(requested_count - counts["available"], 0), slots)
+    if needed <= 0:
+        return
+
+    category_id = _cdk_category_id(db, cdk)
+    category_clause, category_params = _category_asset_clause(category_id)
+    rows = db.execute(
+        f"""SELECT a.id
+            FROM assets a
+            WHERE {category_clause}
+              AND a.consumed_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM cdk_assets ca
+                  WHERE ca.asset_id = a.id AND ca.consumed_at IS NULL
+              )
+            ORDER BY a.created_at ASC, a.id ASC
+            LIMIT ?""",
+        [*category_params, needed],
+    ).fetchall()
+    if not rows:
+        return
+
+    db.executemany(
+        "INSERT OR IGNORE INTO cdk_assets (cdk_id, asset_id) VALUES (?, ?)",
+        [(cdk["id"], row["id"]) for row in rows],
+    )
+    if not cdk["asset_id"]:
+        db.execute(
+            "UPDATE cdk_codes SET asset_id = ? WHERE id = ? AND asset_id IS NULL",
+            (rows[0]["id"], cdk["id"]),
+        )
 
 
 def _asset_category_name(db, asset):
@@ -267,6 +336,7 @@ def redeem_cdk(body: RedeemRequest, request: Request):
 
     with get_db_context() as db:
         cdk = _validate_cdk_record(db, code)
+        _fill_cdk_assets_from_inventory(db, cdk, body.quantity)
         available_assets = _available_cdk_assets(db, cdk)
         if not available_assets:
             counts = _cdk_counts(db, cdk)
@@ -355,6 +425,7 @@ def redeem_codex(body: CodexRedeemRequest, request: Request):
     with get_db_context() as db:
         for code in codes:
             cdk = _validate_cdk_record(db, code)
+            _fill_cdk_assets_from_inventory(db, cdk, body.quantity)
             assets = _available_cdk_assets(db, cdk)
             if not assets:
                 counts = _cdk_counts(db, cdk)

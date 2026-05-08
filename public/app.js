@@ -35,6 +35,7 @@
         radio.addEventListener('change', () => {
             $$('.format-option').forEach(o => o.classList.remove('active'));
             radio.closest('.format-option').classList.add('active');
+            updateActionText();
         });
     });
 
@@ -117,14 +118,22 @@
             detectHint.classList.add('slide-in');
             formatSelector.classList.remove('hidden');
             formatSelector.classList.add('slide-in');
-            btnText.textContent = '下载';
+            updateActionText();
         } else {
             detectHint.classList.add('hidden');
             detectHint.classList.remove('slide-in');
             formatSelector.classList.add('hidden');
             formatSelector.classList.remove('slide-in');
-            btnText.textContent = '兑换';
+            updateActionText();
         }
+    }
+
+    function updateActionText() {
+        if (!isCodexMode) {
+            btnText.textContent = '兑换';
+            return;
+        }
+        btnText.textContent = '兑换';
     }
 
     function setQuotaInfo(remaining, total, forceShow = false, inventory = remaining) {
@@ -321,6 +330,10 @@
         const box = document.createElement('div');
         box.className = 'text-export-result';
 
+        const notice = document.createElement('div');
+        notice.className = 'text-export-notice';
+        notice.innerHTML = '<strong>文本格式</strong><span>每行一个账号：邮箱----GPT密码----邮箱密码</span>';
+
         const toolbar = document.createElement('div');
         toolbar.className = 'text-export-toolbar';
 
@@ -347,7 +360,7 @@
         pre.textContent = text || '没有可导出的文本';
 
         toolbar.append(meta, copyBtn, downloadBtn);
-        box.append(toolbar, pre);
+        box.append(notice, toolbar, pre);
         resultBody.innerHTML = '';
         resultBody.appendChild(box);
         redeemSection.classList.add('hidden');

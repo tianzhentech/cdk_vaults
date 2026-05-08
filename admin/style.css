@@ -196,8 +196,8 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 }
 .icon-btn:hover { border-color: var(--text-3); color: var(--text-1); }
 .icon-btn.danger:hover { border-color: var(--rose); color: var(--rose); }
-.icon-btn.disabled { opacity: 0.45; cursor: not-allowed; }
-.icon-btn.disabled:hover { border-color: var(--border); color: var(--text-3); }
+.icon-btn.disabled, .icon-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.icon-btn.disabled:hover, .icon-btn:disabled:hover { border-color: var(--border); color: var(--text-3); }
 
 .filter-bar {
     display: flex; gap: 12px; margin-bottom: 16px;

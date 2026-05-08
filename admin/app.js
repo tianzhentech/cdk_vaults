@@ -828,6 +828,8 @@
     let cdkPageSize = 20;
     let selectedCdkIds = new Set();
     let cdkDeleteReasons = new Map();
+    let cdkCodes = new Map();
+    let cdkCanDelete = new Map();
 
     async function loadCDKs(page) {
         if (page) cdkPage = page;
@@ -839,6 +841,8 @@
         });
         selectedCdkIds.clear();
         cdkDeleteReasons.clear();
+        cdkCodes.clear();
+        cdkCanDelete.clear();
         updateCDKBatchBar();
         const categoryId = $('#cdk-filter-category').value;
         const status = $('#cdk-filter-status').value;
@@ -849,6 +853,8 @@
             const data = normalizePagedData(await api(path));
             const list = data.items || [];
             list.forEach(c => {
+                cdkCodes.set(c.id, c.code);
+                cdkCanDelete.set(c.id, c.can_delete !== false);
                 if (c.can_delete === false) {
                     cdkDeleteReasons.set(c.id, c.delete_block_reason || 'CDK 已有兑换记录，不能删除');
                 }
@@ -862,7 +868,7 @@
                 list.map(c => {
                     const canDelete = c.can_delete !== false;
                     return `<tr>
-                    <td><input type="checkbox" class="cdk-chk" value="${c.id}" ${canDelete ? '' : 'disabled'}></td>
+                    <td><input type="checkbox" class="cdk-chk" value="${c.id}"></td>
                     <td class="code-text">${esc(c.code)}</td><td>${esc(c.asset_name||'待补充')}</td>
                     <td><span class="badge badge-${c.status}">${statusLabel(c.status)}</span></td>
                     <td>${c.used_count}/${c.max_uses}</td><td>${esc(c.note)||'-'}</td>
@@ -883,19 +889,18 @@
         const selectAll = $('#cdk-select-all');
         const chks = $$('.cdk-chk');
         selectAll?.addEventListener('change', () => {
-            chks.forEach(c => { if (!c.disabled) c.checked = selectAll.checked; });
+            chks.forEach(c => { c.checked = selectAll.checked; });
             syncSelectedCDKs();
         });
         chks.forEach(c => c.addEventListener('change', () => {
             syncSelectedCDKs();
-            const enabled = [...chks].filter(c => !c.disabled);
-            selectAll.checked = enabled.length && enabled.every(c => c.checked);
+            selectAll.checked = chks.length && [...chks].every(c => c.checked);
         }));
     }
 
     function syncSelectedCDKs() {
         selectedCdkIds.clear();
-        $$('.cdk-chk:checked:not(:disabled)').forEach(c => selectedCdkIds.add(parseInt(c.value)));
+        $$('.cdk-chk:checked').forEach(c => selectedCdkIds.add(parseInt(c.value)));
         updateCDKBatchBar();
     }
 
@@ -905,25 +910,42 @@
             bar = document.createElement('div');
             bar.id = 'cdk-batch-action-bar';
             bar.className = 'batch-bar hidden';
-            bar.innerHTML = '<span id="cdk-batch-count"></span><button id="cdk-batch-delete-btn" class="icon-btn danger">批量删除</button>';
+            bar.innerHTML = '<span id="cdk-batch-count"></span><button id="cdk-batch-copy-btn" class="icon-btn">复制</button><button id="cdk-batch-delete-btn" class="icon-btn danger">批量删除</button>';
             $('#cdks-table').parentElement.insertBefore(bar, $('#cdks-table'));
+            $('#cdk-batch-copy-btn').addEventListener('click', doCDKBatchCopy);
             $('#cdk-batch-delete-btn').addEventListener('click', doCDKBatchDelete);
         }
         if (selectedCdkIds.size > 0) {
             bar.classList.remove('hidden');
             $('#cdk-batch-count').textContent = `已选 ${selectedCdkIds.size} 项`;
+            const deletableCount = [...selectedCdkIds].filter(id => cdkCanDelete.get(id) !== false).length;
+            const deleteBtn = $('#cdk-batch-delete-btn');
+            deleteBtn.disabled = deletableCount === 0;
+            deleteBtn.classList.toggle('disabled', deletableCount === 0);
+            deleteBtn.textContent = deletableCount === selectedCdkIds.size ? '批量删除' : `删除可删 ${deletableCount} 项`;
         } else {
             bar.classList.add('hidden');
         }
     }
 
+    async function doCDKBatchCopy() {
+        const codes = [...selectedCdkIds].map(id => cdkCodes.get(id)).filter(Boolean);
+        if (!codes.length) return;
+        const copied = await copyText(codes.join('\n'));
+        toast(
+            copied ? `已复制 ${codes.length} 个 CDK` : '复制失败，请手动选择内容复制',
+            copied ? 'success' : 'warning',
+        );
+    }
+
     async function doCDKBatchDelete() {
-        const ids = [...selectedCdkIds];
-        if (!ids.length) return;
+        const ids = [...selectedCdkIds].filter(id => cdkCanDelete.get(id) !== false);
+        if (!ids.length) return toast('已选 CDK 都有兑换记录，不能删除', 'warning');
+        const skipped = selectedCdkIds.size - ids.length;
         const ok = await confirmDialog({
             title: '批量删除 CDK',
-            message: `确定删除选中的 ${ids.length} 个 CDK？`,
-            detail: '已产生兑换记录的 CDK 会保留。',
+            message: `确定删除 ${ids.length} 个可删除 CDK？`,
+            detail: skipped > 0 ? `另有 ${skipped} 个已有兑换记录，将不会删除。` : '',
             confirmText: '批量删除',
         });
         if (!ok) return;

@@ -334,7 +334,7 @@ def redeem_cdk(body: RedeemRequest, request: Request):
     """普通 CDK 兑换 — 文本/链接/文件资产"""
     code = body.code.strip().upper()
 
-    with get_db_context() as db:
+    with get_db_context("IMMEDIATE") as db:
         cdk = _validate_cdk_record(db, code)
         _fill_cdk_assets_from_inventory(db, cdk, body.quantity)
         available_assets = _available_cdk_assets(db, cdk)
@@ -422,7 +422,7 @@ def redeem_codex(body: CodexRedeemRequest, request: Request):
     fmt = body.format
     cpa_items = []
 
-    with get_db_context() as db:
+    with get_db_context("IMMEDIATE") as db:
         for code in codes:
             cdk = _validate_cdk_record(db, code)
             _fill_cdk_assets_from_inventory(db, cdk, body.quantity)

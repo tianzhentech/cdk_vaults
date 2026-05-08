@@ -3,6 +3,7 @@ CDK Vaults — 资产管理路由
 GET    /api/assets          列出所有资产
 POST   /api/assets          创建资产 (文本/链接)
 POST   /api/assets/upload   上传文件资产
+POST   /api/assets/upload-password 使用管理员密码上传文件资产
 GET    /api/assets/{id}     获取资产详情
 PUT    /api/assets/{id}     更新资产
 DELETE /api/assets/{id}     删除资产
@@ -12,12 +13,13 @@ import os
 import uuid
 import shutil
 import sqlite3
+import json as json_lib
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
 from fastapi.responses import FileResponse
 from server.models import AssetCreate, AssetUpdate, AssetResponse
-from server.auth import get_current_admin
+from server.auth import get_current_admin, verify_password
 from server.database import get_db_context
 from server.utils.cdk_allocator import assign_asset_to_pending_cdk
 
@@ -137,6 +139,74 @@ def asset_write_result(created_items=None, skipped_items=None) -> dict:
         "items": created_items,
         "skipped_items": skipped_items,
     }
+
+
+def require_admin_password(password: str):
+    if not verify_password(password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="管理员密码错误",
+        )
+
+
+def resolve_upload_category(db, category_id: int = 0, category_name: str = "") -> int | None:
+    if category_id:
+        row = db.execute("SELECT id FROM categories WHERE id = ?", (category_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="指定的分类不存在")
+        return row["id"]
+
+    category_name = category_name.strip()
+    if not category_name:
+        return None
+
+    row = db.execute("SELECT id FROM categories WHERE name = ?", (category_name,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"分类不存在: {category_name}")
+    return row["id"]
+
+
+def extract_upload_asset_name(file: UploadFile, raw: bytes, explicit_name: str = "") -> str:
+    asset_name = explicit_name.strip()
+    if asset_name:
+        return asset_name
+
+    asset_name = file.filename or "未命名资产"
+    try:
+        data = json_lib.loads(raw)
+        if isinstance(data, dict) and data.get("email"):
+            asset_name = str(data["email"]).strip()
+    except Exception:
+        pass
+
+    return asset_name or file.filename or "未命名资产"
+
+
+def save_file_asset(db, file: UploadFile, raw: bytes, asset_name: str, description: str, cat_id: int | None):
+    duplicate = find_duplicate_asset(db, asset_name, cat_id, "file")
+    if duplicate:
+        return None, row_to_asset(duplicate)
+
+    ext = os.path.splitext(file.filename)[1] if file.filename else ""
+    unique_name = f"{uuid.uuid4().hex}{ext}"
+    full_path = os.path.join(UPLOAD_DIR, unique_name)
+    with open(full_path, "wb") as f:
+        f.write(raw)
+
+    relative_path = f"/uploads/{unique_name}"
+    now = datetime.now(timezone.utc).isoformat()
+    cursor = db.execute(
+        """INSERT INTO assets (name, type, description, file_path, category_id, created_at, updated_at)
+           VALUES (?, 'file', ?, ?, ?, ?, ?)""",
+        (asset_name, description, relative_path, cat_id, now, now),
+    )
+    asset_id = cursor.lastrowid
+    assign_asset_to_pending_cdk(db, asset_id, cat_id)
+    row = db.execute("""
+        SELECT a.*, c.name as category_name FROM assets a
+        LEFT JOIN categories c ON a.category_id = c.id WHERE a.id = ?
+    """, (asset_id,)).fetchone()
+    return row_to_asset(row), None
 
 
 @router.get("")
@@ -360,6 +430,56 @@ async def upload_batch(
                 LEFT JOIN categories c ON a.category_id = c.id WHERE a.id = ?
             """, (cursor.lastrowid,)).fetchone()
             results.append(row_to_asset(row))
+
+    return asset_write_result(created_items=results, skipped_items=skipped)
+
+
+@router.post("/upload-password")
+async def upload_with_password(
+    password: str = Form(...),
+    file: UploadFile | None = File(default=None),
+    files: list[UploadFile] | None = File(default=None),
+    category_id: int = Form(default=0),
+    category_name: str = Form(default=""),
+    description: str = Form(default=""),
+    name: str = Form(default=""),
+):
+    """
+    密码鉴权上传接口，便于脚本直接上传资产。
+
+    multipart/form-data:
+    - password: 管理员密码
+    - file: 单个文件，或 files: 一个或多个文件
+    - category_id 或 category_name: 可选分类
+    - description: 可选描述
+    - name: 可选资产名，仅上传单个文件时生效；未提供时 JSON 会用 email 字段命名
+    """
+    require_admin_password(password)
+    upload_files = []
+    if file:
+        upload_files.append(file)
+    if files:
+        upload_files.extend(files)
+
+    if not upload_files:
+        raise HTTPException(status_code=400, detail="请提供要上传的文件")
+    if name.strip() and len(upload_files) > 1:
+        raise HTTPException(status_code=400, detail="批量上传时不能使用统一 name，请让系统按文件名或 JSON email 命名")
+
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    results = []
+    skipped = []
+
+    with get_db_context(transaction_mode="IMMEDIATE") as db:
+        cat_id = resolve_upload_category(db, category_id, category_name)
+        for upload_file in upload_files:
+            raw = await upload_file.read()
+            asset_name = extract_upload_asset_name(upload_file, raw, name if len(upload_files) == 1 else "")
+            created, skipped_item = save_file_asset(db, upload_file, raw, asset_name, description, cat_id)
+            if skipped_item:
+                skipped.append(skipped_item)
+            elif created:
+                results.append(created)
 
     return asset_write_result(created_items=results, skipped_items=skipped)
 

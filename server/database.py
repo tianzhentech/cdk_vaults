@@ -23,10 +23,15 @@ def get_db() -> sqlite3.Connection:
 
 
 @contextmanager
-def get_db_context():
+def get_db_context(transaction_mode: str | None = None):
     """数据库连接上下文管理器，自动提交/回滚"""
     conn = get_db()
     try:
+        if transaction_mode:
+            mode = transaction_mode.upper()
+            if mode not in {"DEFERRED", "IMMEDIATE", "EXCLUSIVE"}:
+                raise ValueError(f"unsupported SQLite transaction mode: {transaction_mode}")
+            conn.execute(f"BEGIN {mode}")
         yield conn
         conn.commit()
     except Exception:
@@ -106,6 +111,83 @@ def _ensure_cdk_indexes(conn: sqlite3.Connection):
         CREATE INDEX IF NOT EXISTS idx_cdk_asset ON cdk_codes(asset_id);
         CREATE INDEX IF NOT EXISTS idx_cdk_category ON cdk_codes(category_id);
     """)
+
+
+def _dedupe_cdk_asset_bindings(conn: sqlite3.Connection):
+    """
+    Keep exactly one cdk_assets row per asset before adding the unique index.
+    Prefer rows that already have redemption evidence, then consumed rows, then oldest binding.
+    """
+    conn.execute("DROP TABLE IF EXISTS temp.cdk_asset_keep")
+    conn.execute("""
+        CREATE TEMP TABLE cdk_asset_keep AS
+        SELECT
+            ca.asset_id,
+            (
+                SELECT ca2.id
+                FROM cdk_assets ca2
+                LEFT JOIN assets a2 ON a2.id = ca2.asset_id
+                WHERE ca2.asset_id = ca.asset_id
+                ORDER BY
+                    CASE
+                        WHEN EXISTS (
+                            SELECT 1
+                            FROM redemption_logs rl
+                            WHERE rl.cdk_id = ca2.cdk_id AND rl.asset_id = ca2.asset_id
+                        ) THEN 0
+                        WHEN a2.consumed_by_cdk_id = ca2.cdk_id THEN 1
+                        WHEN ca2.consumed_at IS NOT NULL THEN 2
+                        ELSE 3
+                    END,
+                    ca2.id ASC
+                LIMIT 1
+            ) AS keep_id
+        FROM cdk_assets ca
+        GROUP BY ca.asset_id
+    """)
+    conn.execute("""
+        DELETE FROM cdk_assets
+        WHERE id NOT IN (SELECT keep_id FROM cdk_asset_keep)
+    """)
+    conn.execute("DROP TABLE IF EXISTS temp.cdk_asset_keep")
+
+    # Keep the legacy primary asset pointer aligned with the surviving binding.
+    conn.execute("""
+        UPDATE cdk_codes
+        SET asset_id = (
+            SELECT ca.asset_id
+            FROM cdk_assets ca
+            WHERE ca.cdk_id = cdk_codes.id
+            ORDER BY ca.id ASC
+            LIMIT 1
+        )
+        WHERE asset_id IS NULL
+          OR NOT EXISTS (
+              SELECT 1
+              FROM cdk_assets ca
+              WHERE ca.cdk_id = cdk_codes.id AND ca.asset_id = cdk_codes.asset_id
+          )
+    """)
+    conn.execute("""
+        UPDATE cdk_codes
+        SET used_count = (
+            SELECT COUNT(*)
+            FROM cdk_assets ca
+            WHERE ca.cdk_id = cdk_codes.id AND ca.consumed_at IS NOT NULL
+        )
+    """)
+    conn.execute("""
+        UPDATE cdk_codes
+        SET status = CASE
+            WHEN status IN ('disabled', 'expired') THEN status
+            WHEN used_count >= max_uses THEN 'used'
+            ELSE 'active'
+        END
+    """)
+
+
+def _ensure_unique_asset_binding(conn: sqlite3.Connection):
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_cdk_assets_asset_unique ON cdk_assets(asset_id)")
 
 
 def init_db():
@@ -229,6 +311,8 @@ def init_db():
         WHERE consumed_at IS NULL
           AND id IN (SELECT asset_id FROM cdk_codes WHERE used_count > 0)
     """)
+    _dedupe_cdk_asset_bindings(conn)
+    _ensure_unique_asset_binding(conn)
 
     # ── 内置 Codex 分类 (不可删除) ─────────────────────
     existing = conn.execute("SELECT id FROM categories WHERE name = 'Codex'").fetchone()

@@ -51,10 +51,12 @@ def assign_asset_to_pending_cdk(db, asset_id: int, category_id: int | None) -> i
     if not cdk:
         return None
 
-    db.execute(
+    cursor = db.execute(
         "INSERT OR IGNORE INTO cdk_assets (cdk_id, asset_id) VALUES (?, ?)",
         (cdk["id"], asset_id),
     )
+    if cursor.rowcount != 1:
+        return None
     if not cdk["asset_id"]:
         db.execute(
             "UPDATE cdk_codes SET asset_id = ? WHERE id = ? AND asset_id IS NULL",

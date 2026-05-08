@@ -4,6 +4,7 @@ CDK Vaults — JWT 认证
 """
 
 import os
+import hmac
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -22,7 +23,7 @@ security = HTTPBearer()
 
 def verify_password(password: str) -> bool:
     """验证管理员密码"""
-    return password == ADMIN_PASSWORD
+    return hmac.compare_digest(password.encode("utf-8"), ADMIN_PASSWORD.encode("utf-8"))
 
 
 def create_token(expires_delta: Optional[timedelta] = None) -> str:

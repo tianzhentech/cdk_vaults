@@ -46,7 +46,14 @@
                     <div class="format-label">📦 导出格式</div>
                     <div class="format-options">
                         <label class="format-option active">
-                            <input type="radio" name="export-format" value="cpa" checked>
+                            <input type="radio" name="export-format" value="text" checked>
+                            <div class="format-card">
+                                <div class="format-name">文本格式</div>
+                                <div class="format-desc">邮箱/GPT/邮箱密码</div>
+                            </div>
+                        </label>
+                        <label class="format-option">
+                            <input type="radio" name="export-format" value="cpa">
                             <div class="format-card">
                                 <div class="format-name">CPA 原格式</div>
                                 <div class="format-desc">原始 JSON 文件</div>
@@ -64,13 +71,6 @@
                             <div class="format-card">
                                 <div class="format-name">Sub2API 分开</div>
                                 <div class="format-desc">每个账号独立文件</div>
-                            </div>
-                        </label>
-                        <label class="format-option">
-                            <input type="radio" name="export-format" value="text">
-                            <div class="format-card">
-                                <div class="format-name">文本格式</div>
-                                <div class="format-desc">邮箱/GPT/邮箱密码</div>
                             </div>
                         </label>
                     </div>

@@ -388,6 +388,8 @@ def redeem_cdk(body: RedeemRequest, request: Request):
 
         redeemed_assets = []
         for asset in available_assets:
+            if _asset_category_name(db, asset) == CODEX_CATEGORY_NAME:
+                raise HTTPException(status_code=400, detail="该兑换码是 Codex 卡密，请选择导出格式后再兑换")
             _consume_cdk(db, cdk, asset, request)
             download_url = _create_download_token(db, cdk, asset) if asset["type"] == "file" else None
             redeemed_assets.append(_asset_response(asset, _asset_category_name(db, asset), download_url))

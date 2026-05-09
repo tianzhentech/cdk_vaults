@@ -33,6 +33,7 @@
     let detectedInventory = 0;
     let detectedAlreadyRedeemed = false;
     let detectedReexportCount = 0;
+    let isSubmitting = false;
 
     // ── 格式选择器交互 ───────────────────────────
     $$('.format-option input').forEach(radio => {
@@ -90,6 +91,51 @@
     }
 
     // ── 自动检测 CDK 分类 (debounced) ────────────
+    function getDetectKey(codes) {
+        const firstCode = codes[0] || '';
+        return `${firstCode}|${codes.length === 1 ? 'single' : 'multi'}`;
+    }
+
+    function applyDetectResult(codes, data) {
+        const detectKey = getDetectKey(codes);
+        lastDetectedCode = detectKey;
+        detectedAlreadyRedeemed = codes.length === 1 && data.already_redeemed === true;
+        detectedReexportCount = detectedAlreadyRedeemed ? (parseInt(data.reexport_count) || 0) : 0;
+        setCodexMode(data.is_codex === true);
+        updateDetectHintText();
+        updateActionText();
+        if (data.found) {
+            setQuotaInfo(
+                data.remaining_count || 0,
+                data.total_count || 0,
+                true,
+                data.inventory_count ?? data.remaining_count ?? 0,
+            );
+        } else {
+            detectedAlreadyRedeemed = false;
+            detectedReexportCount = 0;
+            setQuotaInfo(0, 0, false, 0);
+        }
+    }
+
+    async function detectCodes(codes, { force = false } = {}) {
+        if (!codes.length) return null;
+        const detectKey = getDetectKey(codes);
+        if (!force && detectKey === lastDetectedCode) {
+            return { found: true, is_codex: isCodexMode };
+        }
+
+        const res = await fetch('/api/redeem/detect', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code: codes[0] }),
+        });
+        if (!res.ok) throw new Error('识别兑换码失败');
+        const data = await res.json();
+        applyDetectResult(codes, data);
+        return data;
+    }
+
     function scheduleDetect(codes) {
         clearTimeout(detectTimer);
         if (!codes.length) {
@@ -101,37 +147,12 @@
             return;
         }
 
-        const firstCode = codes[0];
-        const detectKey = `${firstCode}|${codes.length === 1 ? 'single' : 'multi'}`;
+        const detectKey = getDetectKey(codes);
         if (detectKey === lastDetectedCode) return;
 
         detectTimer = setTimeout(async () => {
             try {
-                const res = await fetch('/api/redeem/detect', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ code: firstCode }),
-                });
-                if (!res.ok) return;
-                const data = await res.json();
-                lastDetectedCode = detectKey;
-                detectedAlreadyRedeemed = codes.length === 1 && data.already_redeemed === true;
-                detectedReexportCount = detectedAlreadyRedeemed ? (parseInt(data.reexport_count) || 0) : 0;
-                setCodexMode(data.is_codex === true);
-                updateDetectHintText();
-                updateActionText();
-                if (data.found) {
-                    setQuotaInfo(
-                        data.remaining_count || 0,
-                        data.total_count || 0,
-                        true,
-                        data.inventory_count ?? data.remaining_count ?? 0,
-                    );
-                } else {
-                    detectedAlreadyRedeemed = false;
-                    detectedReexportCount = 0;
-                    setQuotaInfo(0, 0, false, 0);
-                }
+                await detectCodes(codes);
             } catch (_) {
                 // 静默失败
             }
@@ -239,7 +260,8 @@
     }
 
     function updateRedeemButton(codes = parseCodes()) {
-        redeemBtn.disabled = codes.length === 0
+        redeemBtn.disabled = isSubmitting
+            || codes.length === 0
             || (!detectedAlreadyRedeemed && detectedTotal > 0 && (detectedRemaining <= 0 || detectedInventory <= 0));
     }
 
@@ -252,7 +274,9 @@
         hideError();
 
         try {
-            if (isCodexMode) {
+            const detected = await detectCodes(codes, { force: true });
+            const shouldUseCodex = detected?.is_codex === true;
+            if (shouldUseCodex) {
                 await doCodexRedeem(codes);
             } else if (codes.length === 1) {
                 await doNormalRedeem(codes[0]);
@@ -519,6 +543,7 @@
     function setLoading(loading) {
         const text = redeemBtn.querySelector('.btn-text');
         const loader = redeemBtn.querySelector('.btn-loader');
+        isSubmitting = loading;
         if (loading) {
             text.classList.add('hidden');
             loader.classList.remove('hidden');

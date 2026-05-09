@@ -324,9 +324,10 @@
     // ── 显示下载结果 ─────────────────────────────
     function showDownloadResult(count, filename, format, remainingCount = 0) {
         const fmtLabels = {
-            cpa: 'CPA 原格式（OAuth JSON）',
+            cpa: 'CPA 格式（OAuth JSON）',
             sub2api_single: 'Sub2API 合并文件（需 access_token）',
-            sub2api_multi: 'Sub2API 独立文件（需 access_token）',
+            auth_json: 'auth.json 格式（Codex 原始 Oauth 格式）',
+            sub2api_multi: 'auth.json 格式（Codex 原始 Oauth 格式）',
             text: '文本格式（邮箱/GPT密码/邮箱密码）',
         };
         resultName.textContent = `已兑换 ${count} 个资产 · 剩余 ${remainingCount} 个`;

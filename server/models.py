@@ -113,7 +113,7 @@ class RedeemRequest(BaseModel):
 
 class CodexRedeemRequest(BaseModel):
     codes: list[str] = Field(..., min_length=1, description="CDK兑换码列表")
-    format: str = Field(default="cpa", pattern="^(cpa|sub2api_single|sub2api_multi|text)$", description="导出格式")
+    format: str = Field(default="cpa", pattern="^(cpa|sub2api_single|auth_json|sub2api_multi|text)$", description="导出格式")
     quantity: int = Field(default=1, ge=1, le=1000, description="每个CDK本次导出资产数量")
 
 

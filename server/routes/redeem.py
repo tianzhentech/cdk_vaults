@@ -21,6 +21,7 @@ from server.database import get_db_context, get_redeem_notice
 from server.utils.codex_converter import (
     cpa_access_token,
     cpa_has_text_passwords,
+    cpa_to_auth_json,
     cpa_to_sub2api_account,
     cpa_to_text_line,
     wrap_sub2api,
@@ -311,7 +312,7 @@ def _validate_codex_payload_format(cpa: dict, fmt: str, code: str, asset) -> Non
     if has_access_token and not has_passwords and fmt == "text":
         raise HTTPException(
             status_code=400,
-            detail=f"{label} 缺少 GPT密码/邮箱密码字段，只能兑换为 CPA 或 Sub2API 格式",
+            detail=f"{label} 缺少 GPT密码/邮箱密码字段，只能兑换为 CPA、Sub2API 或 auth.json 格式",
         )
 
 
@@ -456,8 +457,8 @@ def redeem_codex(body: CodexRedeemRequest, request: Request):
         return _export_cpa(cpa_items, response_headers)
     elif fmt == "sub2api_single":
         return _export_sub2api_single(cpa_items, response_headers)
-    elif fmt == "sub2api_multi":
-        return _export_sub2api_multi(cpa_items, response_headers)
+    elif fmt in ("auth_json", "sub2api_multi"):
+        return _export_auth_json(cpa_items, response_headers)
     elif fmt == "text":
         return _export_text(cpa_items, response_headers)
 
@@ -487,6 +488,10 @@ def _zip_filename(base: str, date_suffix: str, count: int) -> str:
 
 def _sub2api_all_filename(date_suffix: str, count: int) -> str:
     return f"sub2api_all_in_one_{date_suffix}_{count}.json"
+
+
+def _auth_json_pack_filename(date_suffix: str, count: int) -> str:
+    return f"auth_json_pack_{date_suffix}_{count}.zip"
 
 
 def _text_filename(date_suffix: str, count: int) -> str:
@@ -535,24 +540,23 @@ def _export_sub2api_single(items: list, headers: dict | None = None) -> Streamin
     )
 
 
-def _export_sub2api_multi(items: list, headers: dict | None = None) -> StreamingResponse:
-    """Sub2API 多文件: 每个账号单独一个 JSON，多个打 ZIP"""
+def _export_auth_json(items: list, headers: dict | None = None) -> StreamingResponse:
+    """Codex auth.json 格式: 单个=auth.json，多个=ZIP，每个账号一个 auth.json。"""
     headers = headers or {}
     date_suffix = _export_date_suffix()
     converted = []
     for _, asset, cpa in items:
-        account = cpa_to_sub2api_account(cpa)
-        export = wrap_sub2api([account])
         email = cpa.get("email", "unknown")
-        fname = _json_filename("sub2api", email, date_suffix)
-        converted.append((fname, json.dumps(export, indent=2, ensure_ascii=False)))
+        auth_json = cpa_to_auth_json(cpa)
+        folder = _safe_filename_part(email or asset["name"], "unknown")
+        converted.append((f"{folder}/auth.json", json.dumps(auth_json, indent=2, ensure_ascii=False)))
 
     if len(converted) == 1:
-        fname, content = converted[0]
+        _, content = converted[0]
         return StreamingResponse(
             io.BytesIO(content.encode("utf-8")),
             media_type="application/json",
-            headers=_with_headers(headers, f'attachment; filename="{fname}"'),
+            headers=_with_headers(headers, 'attachment; filename="auth.json"'),
         )
 
     buf = io.BytesIO()
@@ -563,7 +567,7 @@ def _export_sub2api_multi(items: list, headers: dict | None = None) -> Streaming
     return StreamingResponse(
         buf,
         media_type="application/zip",
-        headers=_with_headers(headers, f'attachment; filename="{_zip_filename("sub2api_pack", date_suffix, len(converted))}"'),
+        headers=_with_headers(headers, f'attachment; filename="{_auth_json_pack_filename(date_suffix, len(converted))}"'),
     )
 
 

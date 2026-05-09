@@ -106,6 +106,21 @@ def cpa_to_sub2api_account(cpa: dict) -> dict:
     }
 
 
+def cpa_to_auth_json(cpa: dict) -> dict:
+    """将 CPA JSON 转为 Codex auth.json 格式。"""
+    return {
+        "auth_mode": "chatgpt",
+        "OPENAI_API_KEY": None,
+        "tokens": {
+            "id_token": str(cpa.get("id_token", "")),
+            "access_token": cpa_access_token(cpa),
+            "refresh_token": str(cpa.get("refresh_token", "")),
+            "account_id": str(cpa.get("account_id", "")),
+        },
+        "last_refresh": str(cpa.get("last_refresh", "")),
+    }
+
+
 def wrap_sub2api(accounts: list) -> dict:
     """将 account 列表包装为完整 sub2api 导出格式"""
     return {

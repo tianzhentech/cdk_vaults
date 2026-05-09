@@ -44,37 +44,37 @@
                 <!-- Codex 识别提示 + 格式选择器 -->
                 <div id="detect-hint" class="detect-hint hidden">
                     <span class="detect-icon">⚡</span>
-                    <span>已识别为 <strong>Codex</strong> 卡密，请选择导出格式</span>
+                    <span>已识别为 <strong>Codex</strong> 账号卡密，请选择导出格式</span>
                 </div>
                 <div id="format-selector" class="format-selector hidden">
-                    <div class="format-label">📦 导出格式</div>
+                    <div class="format-label">📦 导出格式（按 JSON 字段自动限制）</div>
                     <div class="format-options">
                         <label class="format-option active">
                             <input type="radio" name="export-format" value="text" checked>
                             <div class="format-card">
                                 <div class="format-name">文本格式</div>
-                                <div class="format-desc">邮箱/GPT/邮箱密码</div>
+                                <div class="format-desc">邮箱----GPT密码----邮箱密码</div>
                             </div>
                         </label>
                         <label class="format-option">
                             <input type="radio" name="export-format" value="cpa">
                             <div class="format-card">
                                 <div class="format-name">CPA 原格式</div>
-                                <div class="format-desc">原始 JSON 文件</div>
+                                <div class="format-desc">原始 OAuth JSON，需含 access_token</div>
                             </div>
                         </label>
                         <label class="format-option">
                             <input type="radio" name="export-format" value="sub2api_single">
                             <div class="format-card">
                                 <div class="format-name">Sub2API 合并</div>
-                                <div class="format-desc">合并为单个文件</div>
+                                <div class="format-desc">需含 access_token，合并为单个文件</div>
                             </div>
                         </label>
                         <label class="format-option">
                             <input type="radio" name="export-format" value="sub2api_multi">
                             <div class="format-card">
                                 <div class="format-name">Sub2API 分开</div>
-                                <div class="format-desc">每个账号独立文件</div>
+                                <div class="format-desc">需含 access_token，每个账号独立文件</div>
                             </div>
                         </label>
                     </div>

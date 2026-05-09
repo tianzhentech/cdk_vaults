@@ -26,9 +26,55 @@ def decode_jwt_payload(token: str) -> dict:
         return {}
 
 
+def cpa_access_token(cpa: dict) -> str:
+    return str(_first_nested_value(cpa, ("access_token", "accessToken", "access token", "at")) or "").strip()
+
+
+def cpa_text_fields(cpa: dict) -> tuple[str, str, str]:
+    email = _first_nested_value(cpa, ("email", "mail", "邮箱"))
+    gpt_password = _first_nested_value(
+        cpa,
+        (
+            "gpt_password",
+            "chatgpt_password",
+            "openai_password",
+            "account_password",
+            "account_pass",
+            "password",
+            "passwd",
+            "pass",
+            "gpt密码",
+            "GPT密码",
+            "密码",
+        ),
+    )
+    mail_password = _first_nested_value(
+        cpa,
+        (
+            "email_password",
+            "email_pass",
+            "email_pwd",
+            "mail_password",
+            "mail_pass",
+            "mail_pwd",
+            "imap_password",
+            "smtp_password",
+            "邮箱密码",
+            "邮件密码",
+        ),
+    )
+    return str(email or ""), str(gpt_password or ""), str(mail_password or "")
+
+
+def cpa_has_text_passwords(cpa: dict) -> bool:
+    _email, gpt_password, mail_password = cpa_text_fields(cpa)
+    return bool(str(gpt_password).strip() and str(mail_password).strip())
+
+
 def cpa_to_sub2api_account(cpa: dict) -> dict:
     """将单个 CPA JSON 转为 sub2api account 格式"""
-    at_payload = decode_jwt_payload(cpa.get("access_token", ""))
+    access_token = cpa_access_token(cpa)
+    at_payload = decode_jwt_payload(access_token)
     auth = at_payload.get("https://api.openai.com/auth", {})
     orgs = auth.get("organizations", [])
 
@@ -41,7 +87,7 @@ def cpa_to_sub2api_account(cpa: dict) -> dict:
         "platform": "openai",
         "type": "oauth",
         "credentials": {
-            "access_token": cpa.get("access_token", ""),
+            "access_token": access_token,
             "chatgpt_account_id": auth.get("chatgpt_account_id", cpa.get("account_id", "")),
             "chatgpt_user_id": auth.get("chatgpt_user_id", ""),
             "client_id": at_payload.get("client_id", "app_EMoamEEZ73f0CkXaXp7hrann"),
@@ -102,36 +148,5 @@ def _line_part(value) -> str:
 
 def cpa_to_text_line(cpa: dict) -> str:
     """导出为: 邮箱----GPT密码----邮箱密码"""
-    email = _first_nested_value(cpa, ("email", "mail", "邮箱"))
-    gpt_password = _first_nested_value(
-        cpa,
-        (
-            "gpt_password",
-            "chatgpt_password",
-            "openai_password",
-            "account_password",
-            "account_pass",
-            "password",
-            "passwd",
-            "pass",
-            "gpt密码",
-            "GPT密码",
-            "密码",
-        ),
-    )
-    mail_password = _first_nested_value(
-        cpa,
-        (
-            "email_password",
-            "email_pass",
-            "email_pwd",
-            "mail_password",
-            "mail_pass",
-            "mail_pwd",
-            "imap_password",
-            "smtp_password",
-            "邮箱密码",
-            "邮件密码",
-        ),
-    )
+    email, gpt_password, mail_password = cpa_text_fields(cpa)
     return "----".join((_line_part(email), _line_part(gpt_password), _line_part(mail_password)))

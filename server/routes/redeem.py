@@ -18,7 +18,13 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from server.models import RedeemRequest, RedeemResponse, AssetResponse, CodexRedeemRequest
 from server.database import get_db_context, get_redeem_notice
-from server.utils.codex_converter import cpa_to_sub2api_account, cpa_to_text_line, wrap_sub2api
+from server.utils.codex_converter import (
+    cpa_access_token,
+    cpa_has_text_passwords,
+    cpa_to_sub2api_account,
+    cpa_to_text_line,
+    wrap_sub2api,
+)
 
 router = APIRouter()
 
@@ -288,6 +294,27 @@ def _load_cpa_json(asset) -> dict:
         return json.load(f)
 
 
+def _codex_asset_label(asset, cpa: dict) -> str:
+    return str(cpa.get("email") or asset["name"] or "unknown").strip()
+
+
+def _validate_codex_payload_format(cpa: dict, fmt: str, code: str, asset) -> None:
+    has_access_token = bool(cpa_access_token(cpa))
+    has_passwords = cpa_has_text_passwords(cpa)
+    label = _codex_asset_label(asset, cpa)
+
+    if not has_access_token and fmt != "text":
+        raise HTTPException(
+            status_code=400,
+            detail=f"{label} 缺少 access_token，只能兑换为文本格式",
+        )
+    if has_access_token and not has_passwords and fmt == "text":
+        raise HTTPException(
+            status_code=400,
+            detail=f"{label} 缺少 GPT密码/邮箱密码字段，只能兑换为 CPA 或 Sub2API 格式",
+        )
+
+
 # ── CDK 探测 (不消费) ─────────────────────────────────
 @router.post("/detect")
 def detect_cdk(body: RedeemRequest):
@@ -411,6 +438,7 @@ def redeem_codex(body: CodexRedeemRequest, request: Request):
                     raise HTTPException(status_code=400, detail=f"兑换码 {code} 对应的资产不属于 Codex 分类")
 
                 cpa = _load_cpa_json(asset)
+                _validate_codex_payload_format(cpa, fmt, code, asset)
                 _consume_cdk(db, cdk, asset, request)
                 cpa_items.append((cdk, asset, cpa))
         cdk_by_id = {cdk["id"]: cdk for cdk, _, _ in cpa_items}

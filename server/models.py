@@ -134,6 +134,11 @@ class AdminLogin(BaseModel):
     password: str = Field(..., min_length=1, description="管理员密码")
 
 
+class RedeemNoticeSettings(BaseModel):
+    enabled: bool = Field(default=False, description="是否在兑换页显示通知")
+    content: str = Field(default="", max_length=2000, description="通知内容")
+
+
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"

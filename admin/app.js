@@ -182,8 +182,54 @@
     });
 
     // ── 数据概览 ──────────────────────────────────
+    const noticeEnabled = $('#notice-enabled');
+    const noticeContent = $('#notice-content');
+    const noticeStatus = $('#notice-status');
+    const noticeSaveBtn = $('#notice-save-btn');
+
+    function updateNoticeStatus() {
+        const enabled = noticeEnabled.checked;
+        const hasContent = noticeContent.value.trim().length > 0;
+        noticeStatus.textContent = enabled
+            ? (hasContent ? '已开启，兑换页正在展示' : '已开启，但内容为空不会展示')
+            : '未开启';
+        noticeStatus.classList.toggle('active', enabled && hasContent);
+    }
+
+    async function loadNoticeSettings() {
+        try {
+            const notice = await api('/admin/notice');
+            noticeEnabled.checked = notice.enabled === true;
+            noticeContent.value = notice.content || '';
+            updateNoticeStatus();
+        } catch (e) {
+            console.error(e);
+        }
+    }
+
+    noticeEnabled.addEventListener('change', updateNoticeStatus);
+    noticeContent.addEventListener('input', updateNoticeStatus);
+    noticeSaveBtn.addEventListener('click', async () => {
+        try {
+            const notice = await api('/admin/notice', {
+                method: 'PUT',
+                body: JSON.stringify({
+                    enabled: noticeEnabled.checked,
+                    content: noticeContent.value,
+                }),
+            });
+            noticeEnabled.checked = notice.enabled === true;
+            noticeContent.value = notice.content || '';
+            updateNoticeStatus();
+            toast('兑换页通知已保存', 'success');
+        } catch (e) {
+            toast(e.message);
+        }
+    });
+
     async function loadDashboard() {
         try {
+            loadNoticeSettings();
             const s = await api('/admin/stats');
             $('#stats-grid').innerHTML = `
                 <div class="stat-card"><div class="stat-label">总资产</div><div class="stat-value purple">${s.total_assets}</div></div>

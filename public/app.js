@@ -22,6 +22,8 @@
     const quantityInput = $('#redeem-quantity');
     const quantityMinus = $('#quantity-minus');
     const quantityPlus = $('#quantity-plus');
+    const siteNotice = $('#site-notice');
+    const siteNoticeContent = $('#site-notice-content');
 
     let isCodexMode = false;
     let detectTimer = null;
@@ -59,6 +61,23 @@
     quantityInput.addEventListener('input', clampQuantity);
     quantityMinus.addEventListener('click', () => stepQuantity(-1));
     quantityPlus.addEventListener('click', () => stepQuantity(1));
+
+    async function loadSiteNotice() {
+        try {
+            const res = await fetch('/api/redeem/notice');
+            if (!res.ok) return;
+            const notice = await res.json();
+            const content = (notice.content || '').trim();
+            if (notice.enabled && content) {
+                siteNoticeContent.textContent = content;
+                siteNotice.classList.remove('hidden');
+            } else {
+                siteNotice.classList.add('hidden');
+            }
+        } catch (_) {
+            siteNotice.classList.add('hidden');
+        }
+    }
 
     // ── 解析 CDK 列表 ────────────────────────────
     function parseCodes() {
@@ -503,5 +522,6 @@
     }
 
     // 自动聚焦
+    loadSiteNotice();
     input.focus();
 })();

@@ -10,6 +10,8 @@ from contextlib import contextmanager
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 DB_PATH = os.path.join(DATA_DIR, "vaults.db")
+REDEEM_NOTICE_ENABLED_KEY = "redeem_notice_enabled"
+REDEEM_NOTICE_CONTENT_KEY = "redeem_notice_content"
 
 
 def get_db() -> sqlite3.Connection:
@@ -190,6 +192,33 @@ def _ensure_unique_asset_binding(conn: sqlite3.Connection):
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_cdk_assets_asset_unique ON cdk_assets(asset_id)")
 
 
+def get_setting(conn: sqlite3.Connection, key: str, default: str = "") -> str:
+    row = conn.execute("SELECT value FROM app_settings WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def set_setting(conn: sqlite3.Connection, key: str, value: str):
+    conn.execute(
+        """INSERT INTO app_settings (key, value, updated_at)
+           VALUES (?, ?, CURRENT_TIMESTAMP)
+           ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP""",
+        (key, value),
+    )
+
+
+def get_redeem_notice(conn: sqlite3.Connection) -> dict:
+    return {
+        "enabled": get_setting(conn, REDEEM_NOTICE_ENABLED_KEY, "0") == "1",
+        "content": get_setting(conn, REDEEM_NOTICE_CONTENT_KEY, ""),
+    }
+
+
+def set_redeem_notice(conn: sqlite3.Connection, enabled: bool, content: str) -> dict:
+    set_setting(conn, REDEEM_NOTICE_ENABLED_KEY, "1" if enabled else "0")
+    set_setting(conn, REDEEM_NOTICE_CONTENT_KEY, content)
+    return {"enabled": enabled, "content": content}
+
+
 def _remove_unconsumed_cdk_asset_bindings(conn: sqlite3.Connection):
     """CDK assets now record consumption only; unconsumed assets stay in the shared inventory."""
     conn.execute("DELETE FROM cdk_assets WHERE consumed_at IS NULL")
@@ -325,6 +354,12 @@ def init_db():
             UNIQUE (cdk_id, asset_id)
         );
 
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL DEFAULT '',
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
         CREATE INDEX IF NOT EXISTS idx_log_cdk ON redemption_logs(cdk_id);
         CREATE INDEX IF NOT EXISTS idx_log_time ON redemption_logs(redeemed_at);
         CREATE INDEX IF NOT EXISTS idx_asset_category ON assets(category_id);
@@ -370,6 +405,14 @@ def init_db():
     _dedupe_cdk_asset_bindings(conn)
     _remove_unconsumed_cdk_asset_bindings(conn)
     _ensure_unique_asset_binding(conn)
+    conn.execute(
+        "INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)",
+        (REDEEM_NOTICE_ENABLED_KEY, "0"),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)",
+        (REDEEM_NOTICE_CONTENT_KEY, ""),
+    )
 
     # ── 内置 Codex 分类 (不可删除) ─────────────────────
     existing = conn.execute("SELECT id FROM categories WHERE name = 'Codex'").fetchone()

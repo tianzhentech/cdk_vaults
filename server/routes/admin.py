@@ -6,9 +6,9 @@ GET  /api/admin/logs       获取兑换记录
 """
 
 from fastapi import APIRouter, Depends
-from server.models import AdminLogin, TokenResponse, StatsResponse, RedemptionLogResponse
+from server.models import AdminLogin, TokenResponse, StatsResponse, RedemptionLogResponse, RedeemNoticeSettings
 from server.auth import verify_password, create_token, get_current_admin
-from server.database import get_db_context
+from server.database import get_db_context, get_redeem_notice, set_redeem_notice
 from fastapi import HTTPException
 
 router = APIRouter()
@@ -27,6 +27,21 @@ def admin_login(body: AdminLogin):
 def verify_token(_admin: str = Depends(get_current_admin)):
     """验证 Token 是否有效"""
     return {"valid": True}
+
+
+@router.get("/notice")
+def get_notice_settings(_admin: str = Depends(get_current_admin)):
+    """获取兑换页通知配置。"""
+    with get_db_context() as db:
+        return get_redeem_notice(db)
+
+
+@router.put("/notice")
+def update_notice_settings(body: RedeemNoticeSettings, _admin: str = Depends(get_current_admin)):
+    """更新兑换页通知配置。"""
+    content = body.content.strip()
+    with get_db_context() as db:
+        return set_redeem_notice(db, body.enabled, content)
 
 
 @router.get("/stats", response_model=StatsResponse)

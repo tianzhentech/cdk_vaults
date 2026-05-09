@@ -130,6 +130,41 @@ body {
     align-items: center; justify-content: center;
 }
 
+/* ── 站点通知 ─────────────────────────────────────── */
+.site-notice {
+    width: 100%;
+    display: grid; grid-template-columns: auto 1fr; gap: 14px;
+    align-items: start;
+    margin-bottom: 28px; padding: 16px 18px;
+    background:
+        linear-gradient(135deg, rgba(245,158,11,0.12), rgba(59,130,246,0.08)),
+        rgba(24,24,27,0.72);
+    border: 1px solid rgba(245,158,11,0.28);
+    border-radius: var(--radius-lg);
+    box-shadow: 0 18px 45px rgba(0,0,0,0.28);
+    backdrop-filter: blur(18px);
+    animation: noticeIn 0.35s ease both;
+}
+.site-notice-label {
+    padding: 4px 9px;
+    border-radius: 999px;
+    background: rgba(245,158,11,0.15);
+    color: #fbbf24;
+    font-size: 0.75rem; font-weight: 800; letter-spacing: 0.06em;
+}
+.site-notice-content {
+    color: var(--text-primary);
+    text-align: left;
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.65;
+    font-size: 0.94rem;
+}
+@keyframes noticeIn {
+    from { opacity: 0; transform: translateY(-10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
 /* ── 兑换区域 ─────────────────────────────────────── */
 .redeem-section { text-align: center; width: 100%; }
 
@@ -585,4 +620,6 @@ body {
     .action-row { justify-content: stretch; }
     .quota-panel { align-items: stretch; flex-direction: column; }
     .quota-control { align-items: stretch; justify-content: space-between; }
+    .site-notice { grid-template-columns: 1fr; gap: 10px; }
+    .site-notice-label { width: fit-content; }
 }

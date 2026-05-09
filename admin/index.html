@@ -49,6 +49,23 @@
             <div id="page-dashboard" class="page active">
                 <h1 class="page-title">数据概览</h1>
                 <div class="stats-grid" id="stats-grid"></div>
+                <div class="section-card notice-settings-card">
+                    <div class="notice-settings-header">
+                        <div>
+                            <h3>兑换页通知</h3>
+                            <p>开启后，兑换页会显示下面填写的通知内容。</p>
+                        </div>
+                        <label class="switch-control">
+                            <input type="checkbox" id="notice-enabled">
+                            <span></span>
+                        </label>
+                    </div>
+                    <textarea id="notice-content" class="notice-content-input" rows="4" maxlength="2000" placeholder="输入要展示在兑换页的通知..."></textarea>
+                    <div class="notice-settings-actions">
+                        <span id="notice-status" class="notice-status">未开启</span>
+                        <button id="notice-save-btn" class="primary-btn">保存通知</button>
+                    </div>
+                </div>
                 <div class="section-card">
                     <h3>最近兑换</h3>
                     <div id="recent-logs" class="table-wrap"></div>

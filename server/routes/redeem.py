@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from server.models import RedeemRequest, RedeemResponse, AssetResponse, CodexRedeemRequest
-from server.database import get_db_context
+from server.database import get_db_context, get_redeem_notice
 from server.utils.codex_converter import cpa_to_sub2api_account, cpa_to_text_line, wrap_sub2api
 
 router = APIRouter()
@@ -29,6 +29,18 @@ DOWNLOAD_TOKEN_TTL_MINUTES = 15
 # ── 内置分类名称 ──────────────────────────────────────
 CODEX_CATEGORY_NAME = "Codex"
 EXPORT_TZ = ZoneInfo("Asia/Shanghai")
+
+
+@router.get("/notice")
+def get_public_notice():
+    """兑换页公开通知。"""
+    with get_db_context() as db:
+        notice = get_redeem_notice(db)
+    content = notice["content"].strip()
+    return {
+        "enabled": bool(notice["enabled"] and content),
+        "content": content if notice["enabled"] else "",
+    }
 
 
 def _resolve_asset_file_path(asset) -> str:

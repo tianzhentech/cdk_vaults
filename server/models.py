@@ -55,6 +55,11 @@ class AssetRedeemStatusUpdate(BaseModel):
     redeemed: bool = Field(..., description="是否标记为已兑换")
 
 
+class AssetCodexExportRequest(BaseModel):
+    asset_ids: list[int] = Field(..., min_length=1, description="要导出的 Codex 文件资产 ID")
+    format: str = Field(default="text", pattern="^(text|cpa|sub2api_single|auth_json|sub2api_multi)$", description="导出格式")
+
+
 class AssetResponse(BaseModel):
     id: int
     name: str

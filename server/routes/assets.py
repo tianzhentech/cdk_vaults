@@ -18,9 +18,10 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
 from fastapi.responses import FileResponse
-from server.models import AssetCreate, AssetUpdate, AssetRedeemStatusUpdate, AssetResponse
+from server.models import AssetCreate, AssetUpdate, AssetRedeemStatusUpdate, AssetCodexExportRequest, AssetResponse
 from server.auth import get_current_admin, verify_password
 from server.database import get_db_context
+from server.routes import redeem as redeem_exports
 
 router = APIRouter()
 
@@ -151,6 +152,15 @@ def asset_with_usage(db, asset_id: int):
                {redeemed_count_sql("a")} AS redeemed_count
         FROM assets a
         LEFT JOIN categories c ON a.category_id = c.id
+        WHERE a.id = ?
+    """, (asset_id,)).fetchone()
+
+
+def codex_export_asset(db, asset_id: int):
+    return db.execute("""
+        SELECT a.*, c.name AS category_name
+        FROM assets a
+        LEFT JOIN categories c ON c.id = a.category_id
         WHERE a.id = ?
     """, (asset_id,)).fetchone()
 
@@ -520,6 +530,49 @@ async def upload_with_password(
                 results.append(created)
 
     return asset_write_result(created_items=results, skipped_items=skipped)
+
+
+@router.post("/export-codex")
+def export_codex_assets(body: AssetCodexExportRequest, _admin: str = Depends(get_current_admin)):
+    """管理员直接按前台 Codex 规则导出选中的文件资产，不消耗库存。"""
+    seen = set()
+    asset_ids = []
+    for asset_id in body.asset_ids:
+        if asset_id in seen:
+            continue
+        seen.add(asset_id)
+        asset_ids.append(asset_id)
+    if not asset_ids:
+        raise HTTPException(status_code=400, detail="请选择要导出的资产")
+
+    items = []
+    with get_db_context() as db:
+        for asset_id in asset_ids:
+            asset = codex_export_asset(db, asset_id)
+            if not asset:
+                raise HTTPException(status_code=404, detail=f"资产 {asset_id} 不存在")
+            if asset["type"] != "file":
+                raise HTTPException(status_code=400, detail=f"{asset['name']} 不是文件资产")
+            if asset["category_name"] != "Codex":
+                raise HTTPException(status_code=400, detail=f"{asset['name']} 不属于 Codex 分类")
+
+            cpa = redeem_exports._load_cpa_json(asset)
+            redeem_exports._validate_codex_payload_format(cpa, body.format, f"资产 {asset_id}", asset)
+            items.append((None, asset, cpa))
+
+    headers = {
+        "X-Redeemed-Count": str(len(items)),
+        "X-Remaining-Count": "0",
+        "X-Inventory-Count": "0",
+        "X-Reexported": "0",
+    }
+    if body.format == "text":
+        return redeem_exports._export_text(items, headers)
+    if body.format == "cpa":
+        return redeem_exports._export_cpa(items, headers)
+    if body.format == "sub2api_single":
+        return redeem_exports._export_sub2api_single(items, headers)
+    return redeem_exports._export_auth_json(items, headers)
 
 
 @router.get("/{asset_id}/file")

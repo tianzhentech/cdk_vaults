@@ -476,6 +476,13 @@
     let assetPageSize = 20;
     let selectedAssetIds = new Set();
     let assetDeleteReasons = new Map();
+    let assetMeta = new Map();
+    const CODEX_EXPORT_FORMATS = [
+        { value: 'text', name: '文本格式', desc: '邮箱----GPT密码----邮箱密码' },
+        { value: 'cpa', name: 'CPA 格式', desc: '单个 JSON，多个 ZIP' },
+        { value: 'sub2api_single', name: 'Sub2API 合并', desc: '合并为单个 JSON 文件' },
+        { value: 'auth_json', name: 'auth.json 格式', desc: '单个 auth.json，多个 ZIP' },
+    ];
 
     function renderAssetUsageStatus(asset) {
         const redeemed = Number(asset.redeemed_count || 0);
@@ -488,16 +495,31 @@
         return `<button class="icon-btn" onclick="window._toggleAssetRedeemStatus(${asset.id}, ${redeemed ? 'false' : 'true'})">${redeemed ? '设未兑换' : '设已兑换'}</button>`;
     }
 
+    function isCodexFileAsset(asset) {
+        return asset.type === 'file' && asset.category_name === 'Codex';
+    }
+
+    function renderAssetExportAction(asset) {
+        if (!isCodexFileAsset(asset)) return '';
+        return `<button class="icon-btn" onclick="window._exportAsset(${asset.id})">导出</button>`;
+    }
+
     async function loadAssets(page) {
         if (page) assetPage = page;
         await populateCategorySelects();
         selectedAssetIds.clear();
         assetDeleteReasons.clear();
+        assetMeta.clear();
         updateBatchBar();
         try {
             const data = normalizePagedData(await api(`/assets?page=${assetPage}&page_size=${assetPageSize}`));
             const list = data.items || [];
             list.forEach(a => {
+                assetMeta.set(a.id, {
+                    name: a.name,
+                    canDelete: a.can_delete !== false,
+                    canExport: isCodexFileAsset(a),
+                });
                 if (a.can_delete === false) {
                     assetDeleteReasons.set(a.id, a.delete_block_reason || '该资产已有 CDK 或兑换记录，不能删除');
                 }
@@ -514,7 +536,7 @@
                 list.map(a => {
                     const canDelete = a.can_delete !== false;
                     return `<tr>
-                    <td><input type="checkbox" class="asset-chk" value="${a.id}" ${canDelete ? '' : 'disabled'}></td>
+                    <td><input type="checkbox" class="asset-chk" value="${a.id}"></td>
                     <td>${a.id}</td><td>${esc(a.name)}</td>
                     <td><span class="badge badge-${a.type}">${a.type}</span></td>
                     <td>${esc(a.category_name)||'<span style="color:var(--text-3)">未分类</span>'}</td>
@@ -522,6 +544,7 @@
                     <td>${fmtTime(a.created_at)}</td>
                     <td style="display:flex;gap:6px">
                         <button class="icon-btn" onclick="window._viewAsset(${a.id})">查看</button>
+                        ${renderAssetExportAction(a)}
                         ${renderAssetStatusAction(a)}
                         <button class="icon-btn danger${canDelete ? '' : ' disabled'}" onclick="window.${canDelete ? '_deleteAsset' : '_explainAssetDelete'}(${a.id})">删除</button>
                     </td>
@@ -553,19 +576,18 @@
         const selectAll = $('#asset-select-all');
         const chks = $$('.asset-chk');
         selectAll?.addEventListener('change', () => {
-            chks.forEach(c => { if (!c.disabled) c.checked = selectAll.checked; });
+            chks.forEach(c => { c.checked = selectAll.checked; });
             syncSelected();
         });
         chks.forEach(c => c.addEventListener('change', () => {
             syncSelected();
-            const enabled = [...chks].filter(c => !c.disabled);
-            selectAll.checked = enabled.length && enabled.every(c => c.checked);
+            selectAll.checked = chks.length && [...chks].every(c => c.checked);
         }));
     }
 
     function syncSelected() {
         selectedAssetIds.clear();
-        $$('.asset-chk:checked:not(:disabled)').forEach(c => selectedAssetIds.add(parseInt(c.value)));
+        $$('.asset-chk:checked').forEach(c => selectedAssetIds.add(parseInt(c.value)));
         updateBatchBar();
     }
 
@@ -575,18 +597,155 @@
             bar = document.createElement('div');
             bar.id = 'batch-action-bar';
             bar.className = 'batch-bar hidden';
-            bar.innerHTML = '<span id="batch-count"></span><button id="batch-delete-btn" class="icon-btn danger">🗑 批量删除</button>';
+            bar.innerHTML = `
+                <span id="batch-count"></span>
+                <select id="batch-export-format" class="page-size-select">${codexFormatOptions('text')}</select>
+                <button id="batch-export-btn" class="icon-btn">导出</button>
+                <button id="batch-delete-btn" class="icon-btn danger">🗑 批量删除</button>
+            `;
             const listEl = $('#assets-list');
             listEl.insertBefore(bar, listEl.firstChild);
+            $('#batch-export-btn').addEventListener('click', doBatchExport);
             $('#batch-delete-btn').addEventListener('click', doBatchDelete);
         }
         if (selectedAssetIds.size > 0) {
             bar.classList.remove('hidden');
             $('#batch-count').textContent = `已选 ${selectedAssetIds.size} 项`;
+            const allExportable = [...selectedAssetIds].every(id => assetMeta.get(id)?.canExport);
+            $('#batch-export-btn').disabled = !allExportable;
+            $('#batch-export-btn').title = allExportable ? '' : '只能导出 Codex 文件资产';
         } else {
             bar.classList.add('hidden');
         }
     }
+
+    function codexFormatOptions(selected = 'text') {
+        return CODEX_EXPORT_FORMATS.map(f =>
+            `<option value="${f.value}" ${f.value === selected ? 'selected' : ''}>${f.name}</option>`
+        ).join('');
+    }
+
+    function validateCodexExportIds(ids) {
+        const invalid = ids.filter(id => !assetMeta.get(id)?.canExport);
+        if (invalid.length) {
+            const names = invalid.slice(0, 3).map(id => assetMeta.get(id)?.name || `#${id}`).join('、');
+            toast(`只能导出 Codex 文件资产：${names}${invalid.length > 3 ? ' 等' : ''}`, 'warning');
+            return false;
+        }
+        return true;
+    }
+
+    async function doBatchExport() {
+        const ids = [...selectedAssetIds];
+        if (!ids.length || !validateCodexExportIds(ids)) return;
+        const format = $('#batch-export-format')?.value || 'text';
+        await exportCodexAssets(ids, format);
+    }
+
+    function chooseCodexExportFormat(count = 1) {
+        return new Promise((resolve) => {
+            const overlay = document.createElement('div');
+            overlay.className = 'confirm-overlay';
+            const options = CODEX_EXPORT_FORMATS.map((f, idx) => `
+                <label style="display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:rgba(255,255,255,0.02);cursor:pointer">
+                    <input type="radio" name="asset-export-format" value="${f.value}" ${idx === 0 ? 'checked' : ''} style="margin-top:3px">
+                    <span>
+                        <strong style="display:block;color:var(--text-1);font-size:0.9rem">${f.name}</strong>
+                        <small style="display:block;color:var(--text-3);margin-top:3px">${f.desc}</small>
+                    </span>
+                </label>
+            `).join('');
+            overlay.innerHTML = `
+                <div class="confirm-card" role="dialog" aria-modal="true" aria-labelledby="export-title">
+                    <div class="confirm-icon">↧</div>
+                    <div class="confirm-content">
+                        <h3 id="export-title">导出 Codex 资产</h3>
+                        <p>请选择 ${count} 个资产的导出格式</p>
+                        <div style="display:grid;gap:8px;margin-top:12px">${options}</div>
+                    </div>
+                    <div class="confirm-actions">
+                        <button class="ghost-btn" data-action="cancel">取消</button>
+                        <button class="primary-btn" data-action="confirm">导出</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(overlay);
+            const previousOverflow = document.body.style.overflow;
+            document.body.style.overflow = 'hidden';
+
+            const cleanup = (value) => {
+                overlay.remove();
+                document.body.style.overflow = previousOverflow;
+                document.removeEventListener('keydown', onKey);
+                resolve(value);
+            };
+            const onKey = (e) => {
+                if (e.key === 'Escape') cleanup('');
+                if (e.key === 'Enter') cleanup(overlay.querySelector('input[name="asset-export-format"]:checked')?.value || 'text');
+            };
+            overlay.addEventListener('click', (e) => {
+                if (e.target === overlay || e.target.dataset.action === 'cancel') cleanup('');
+                if (e.target.dataset.action === 'confirm') {
+                    cleanup(overlay.querySelector('input[name="asset-export-format"]:checked')?.value || 'text');
+                }
+            });
+            document.addEventListener('keydown', onKey);
+            overlay.querySelector('[data-action="cancel"]').focus();
+        });
+    }
+
+    function filenameFromDisposition(disposition, fallback) {
+        const utf8 = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+        if (utf8) return decodeURIComponent(utf8[1].replace(/"/g, ''));
+        const ascii = disposition.match(/filename="?([^";]+)"?/i);
+        return ascii ? ascii[1] : fallback;
+    }
+
+    async function exportCodexAssets(ids, format) {
+        try {
+            const headers = { 'Content-Type': 'application/json' };
+            if (TOKEN) headers['Authorization'] = `Bearer ${TOKEN}`;
+            const res = await fetch(API + '/assets/export-codex', {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({ asset_ids: ids, format }),
+            });
+
+            if (!res.ok) {
+                let message = '导出失败';
+                try {
+                    const data = await res.json();
+                    message = data.detail || message;
+                } catch {}
+                throw new Error(message);
+            }
+
+            if (format === 'text') {
+                const data = await res.json();
+                saveBlob(
+                    new Blob([data.text || ''], { type: 'text/plain;charset=utf-8' }),
+                    data.filename || 'codex_accounts.txt',
+                );
+            } else {
+                const blob = await res.blob();
+                const filename = filenameFromDisposition(
+                    res.headers.get('content-disposition') || '',
+                    ids.length === 1 ? 'codex_export.json' : 'codex_export.zip',
+                );
+                saveBlob(blob, filename);
+            }
+            toast(`已导出 ${ids.length} 个资产`, 'success');
+        } catch (e) {
+            toast(e.message || '导出失败');
+        }
+    }
+
+    window._exportAsset = async (id) => {
+        if (!validateCodexExportIds([id])) return;
+        const format = await chooseCodexExportFormat(1);
+        if (!format) return;
+        await exportCodexAssets([id], format);
+    };
 
     async function doBatchDelete() {
         const ids = [...selectedAssetIds];

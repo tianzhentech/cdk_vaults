@@ -88,13 +88,15 @@ def _category_asset_clause(category_id):
     return "a.category_id = ?", [category_id]
 
 
-def _validate_cdk_record(db, code: str):
+def _validate_cdk_record(db, code: str, allow_used: bool = False):
     """验证 CDK 基础状态，返回 cdk_row。"""
     cdk = db.execute("SELECT * FROM cdk_codes WHERE code = ?", (code,)).fetchone()
     if not cdk:
         raise HTTPException(status_code=404, detail=f"兑换码 {code} 不存在")
 
     if cdk["status"] == "used":
+        if allow_used:
+            return cdk
         raise HTTPException(status_code=400, detail=f"兑换码 {code} 已被使用")
     if cdk["status"] == "disabled":
         raise HTTPException(status_code=400, detail=f"兑换码 {code} 已被禁用")
@@ -114,6 +116,27 @@ def _validate_cdk_record(db, code: str):
             pass
 
     return cdk
+
+
+def _redeemed_assets_for_cdk(db, cdk):
+    return db.execute(
+        """
+        SELECT a.*, MIN(src.sort_id) AS redeemed_sort
+        FROM (
+            SELECT rl.asset_id, rl.id AS sort_id
+            FROM redemption_logs rl
+            WHERE rl.cdk_id = ?
+            UNION ALL
+            SELECT ca.asset_id, ca.id AS sort_id
+            FROM cdk_assets ca
+            WHERE ca.cdk_id = ? AND ca.consumed_at IS NOT NULL
+        ) src
+        JOIN assets a ON a.id = src.asset_id
+        GROUP BY a.id
+        ORDER BY redeemed_sort ASC, a.id ASC
+        """,
+        (cdk["id"], cdk["id"]),
+    ).fetchall()
 
 
 def _available_inventory_assets(db, cdk, limit: int | None = None):
@@ -326,15 +349,26 @@ def detect_cdk(body: RedeemRequest):
     code = body.code.strip().upper()
     with get_db_context() as db:
         try:
-            cdk = _validate_cdk_record(db, code)
+            cdk = _validate_cdk_record(db, code, allow_used=True)
         except HTTPException:
             return {"found": False, "category_name": None, "is_codex": False}
         counts = _cdk_counts(db, cdk)
-        cat_name = _cdk_category_name(db, cdk)
+        redeemed_assets = _redeemed_assets_for_cdk(db, cdk)
+        asset = redeemed_assets[0] if redeemed_assets else None
+        cat_name = _cdk_category_name(db, cdk, asset)
+        is_single_use_cdk = int(cdk["max_uses"] or 1) <= 1
+        already_redeemed = (
+            is_single_use_cdk
+            and counts["used"] > 0
+            and counts["remaining"] <= 0
+            and len(redeemed_assets) > 0
+        )
         return {
             "found": True,
             "category_name": cat_name,
             "is_codex": cat_name == CODEX_CATEGORY_NAME,
+            "already_redeemed": already_redeemed,
+            "reexport_count": len(redeemed_assets) if already_redeemed else 0,
             "remaining_count": counts["remaining"],
             "inventory_count": counts["inventory"],
             "used_count": counts["used"],
@@ -423,11 +457,27 @@ def redeem_codex(body: CodexRedeemRequest, request: Request):
 
     fmt = body.format
     cpa_items = []
+    reexported = False
+    allow_reexport = len(codes) == 1
 
     with get_db_context("IMMEDIATE") as db:
         for code in codes:
-            cdk = _validate_cdk_record(db, code)
-            assets, _ = _select_assets_for_redeem(db, cdk, body.quantity, code)
+            cdk = _validate_cdk_record(db, code, allow_used=True)
+            counts = _cdk_counts(db, cdk)
+            redeemed_assets = _redeemed_assets_for_cdk(db, cdk)
+            is_single_use_cdk = int(cdk["max_uses"] or 1) <= 1
+            should_reexport = (
+                allow_reexport
+                and is_single_use_cdk
+                and counts["remaining"] <= 0
+                and len(redeemed_assets) > 0
+            )
+            if should_reexport:
+                assets = redeemed_assets
+                reexported = True
+            else:
+                cdk = _validate_cdk_record(db, code)
+                assets, _ = _select_assets_for_redeem(db, cdk, body.quantity, code)
 
             for asset in assets:
                 # 验证是否属于 Codex 分类
@@ -440,7 +490,8 @@ def redeem_codex(body: CodexRedeemRequest, request: Request):
 
                 cpa = _load_cpa_json(asset)
                 _validate_codex_payload_format(cpa, fmt, code, asset)
-                _consume_cdk(db, cdk, asset, request)
+                if not should_reexport:
+                    _consume_cdk(db, cdk, asset, request)
                 cpa_items.append((cdk, asset, cpa))
         cdk_by_id = {cdk["id"]: cdk for cdk, _, _ in cpa_items}
         cdk_counts = [_cdk_counts(db, cdk) for cdk in cdk_by_id.values()]
@@ -452,6 +503,7 @@ def redeem_codex(body: CodexRedeemRequest, request: Request):
         "X-Redeemed-Count": str(len(cpa_items)),
         "X-Remaining-Count": str(remaining_count),
         "X-Inventory-Count": str(inventory_count),
+        "X-Reexported": "1" if reexported else "0",
     }
     if fmt == "cpa":
         return _export_cpa(cpa_items, response_headers)
@@ -585,6 +637,7 @@ def _export_text(items: list, headers: dict | None = None) -> JSONResponse:
             "redeemed_count": len(items),
             "remaining_count": int(headers.get("X-Remaining-Count", 0)),
             "inventory_count": int(headers.get("X-Inventory-Count", 0)),
+            "reexported": headers.get("X-Reexported") == "1",
         },
         headers=headers,
     )

@@ -31,6 +31,8 @@
     let detectedRemaining = 0;
     let detectedTotal = 0;
     let detectedInventory = 0;
+    let detectedAlreadyRedeemed = false;
+    let detectedReexportCount = 0;
 
     // ── 格式选择器交互 ───────────────────────────
     $$('.format-option input').forEach(radio => {
@@ -93,12 +95,15 @@
         if (!codes.length) {
             setCodexMode(false);
             setQuotaInfo(0, 0, false, 0);
+            detectedAlreadyRedeemed = false;
+            detectedReexportCount = 0;
             lastDetectedCode = '';
             return;
         }
 
         const firstCode = codes[0];
-        if (firstCode === lastDetectedCode) return;
+        const detectKey = `${firstCode}|${codes.length === 1 ? 'single' : 'multi'}`;
+        if (detectKey === lastDetectedCode) return;
 
         detectTimer = setTimeout(async () => {
             try {
@@ -109,8 +114,12 @@
                 });
                 if (!res.ok) return;
                 const data = await res.json();
-                lastDetectedCode = firstCode;
+                lastDetectedCode = detectKey;
+                detectedAlreadyRedeemed = codes.length === 1 && data.already_redeemed === true;
+                detectedReexportCount = detectedAlreadyRedeemed ? (parseInt(data.reexport_count) || 0) : 0;
                 setCodexMode(data.is_codex === true);
+                updateDetectHintText();
+                updateActionText();
                 if (data.found) {
                     setQuotaInfo(
                         data.remaining_count || 0,
@@ -119,6 +128,8 @@
                         data.inventory_count ?? data.remaining_count ?? 0,
                     );
                 } else {
+                    detectedAlreadyRedeemed = false;
+                    detectedReexportCount = 0;
                     setQuotaInfo(0, 0, false, 0);
                 }
             } catch (_) {
@@ -128,6 +139,14 @@
     }
 
     const detectHint = $('#detect-hint');
+    const detectHintText = $('#detect-hint span:last-child');
+
+    function updateDetectHintText() {
+        if (!isCodexMode) return;
+        detectHintText.innerHTML = detectedAlreadyRedeemed
+            ? `该 CDK 已兑换过，可重新选择导出格式再次导出${detectedReexportCount ? ` ${detectedReexportCount} 个资产` : ''}`
+            : '已识别为 <strong>Codex</strong> 账号卡密，请选择导出格式';
+    }
 
     function setCodexMode(codex) {
         if (codex === isCodexMode) return;
@@ -137,6 +156,7 @@
             detectHint.classList.add('slide-in');
             formatSelector.classList.remove('hidden');
             formatSelector.classList.add('slide-in');
+            updateDetectHintText();
             updateActionText();
         } else {
             detectHint.classList.add('hidden');
@@ -220,7 +240,7 @@
 
     function updateRedeemButton(codes = parseCodes()) {
         redeemBtn.disabled = codes.length === 0
-            || (detectedTotal > 0 && (detectedRemaining <= 0 || detectedInventory <= 0));
+            || (!detectedAlreadyRedeemed && detectedTotal > 0 && (detectedRemaining <= 0 || detectedInventory <= 0));
     }
 
     // ── 兑换逻辑 ─────────────────────────────────
@@ -264,6 +284,7 @@
 
         const redeemedCount = parseInt(res.headers.get('x-redeemed-count')) || quantity * codes.length;
         const remainingCount = parseInt(res.headers.get('x-remaining-count')) || 0;
+        const reexported = res.headers.get('x-reexported') === '1';
 
         if (format === 'text') {
             const data = await res.json();
@@ -278,6 +299,7 @@
                 filename: data.filename || 'codex_accounts.txt',
                 count: data.redeemed_count || redeemedCount,
                 remainingCount: data.remaining_count ?? remainingCount,
+                reexported: data.reexported === true || reexported,
             });
             return;
         }
@@ -297,7 +319,7 @@
 
         const inventoryCount = parseInt(res.headers.get('x-inventory-count')) || 0;
         setQuotaInfo(remainingCount, detectedTotal, true, inventoryCount);
-        showDownloadResult(redeemedCount, filename, format, remainingCount);
+        showDownloadResult(redeemedCount, filename, format, remainingCount, reexported);
     }
 
     async function doNormalRedeem(code) {
@@ -322,7 +344,7 @@
     }
 
     // ── 显示下载结果 ─────────────────────────────
-    function showDownloadResult(count, filename, format, remainingCount = 0) {
+    function showDownloadResult(count, filename, format, remainingCount = 0, reexported = false) {
         const fmtLabels = {
             cpa: 'CPA 格式（OAuth JSON）',
             sub2api_single: 'Sub2API 合并文件（需 access_token）',
@@ -330,7 +352,9 @@
             sub2api_multi: 'auth.json 格式（Codex 原始 Oauth 格式）',
             text: '文本格式（邮箱/GPT密码/邮箱密码）',
         };
-        resultName.textContent = `已兑换 ${count} 个资产 · 剩余 ${remainingCount} 个`;
+        resultName.textContent = reexported
+            ? `该 CDK 已兑换过，已重新导出 ${count} 个资产`
+            : `已兑换 ${count} 个资产 · 剩余 ${remainingCount} 个`;
         resultBody.innerHTML = `
             <div class="download-success">
                 <div class="dl-icon">⬇</div>
@@ -344,8 +368,10 @@
         resultSection.classList.remove('hidden');
     }
 
-    function showTextResult({ text, filename, count, remainingCount = 0 }) {
-        resultName.textContent = `已兑换 ${count} 个资产 · 剩余 ${remainingCount} 个`;
+    function showTextResult({ text, filename, count, remainingCount = 0, reexported = false }) {
+        resultName.textContent = reexported
+            ? `该 CDK 已兑换过，已重新导出 ${count} 个资产`
+            : `已兑换 ${count} 个资产 · 剩余 ${remainingCount} 个`;
 
         const box = document.createElement('div');
         box.className = 'text-export-result';

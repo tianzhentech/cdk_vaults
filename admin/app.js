@@ -581,7 +581,9 @@
     const modalContent = $('#modal-content');
     const modalBody = $('#modal-body');
     const modalCopyBtn = $('#modal-copy-btn');
+    const modalDownloadBtn = $('#modal-download-btn');
     let currentModalText = '';
+    let currentModalAsset = null;
 
     $('#modal-close-btn').addEventListener('click', closeModal);
     assetModal.addEventListener('click', (e) => { if (e.target === assetModal) closeModal(); });
@@ -596,16 +598,69 @@
         }
     });
 
+    modalDownloadBtn.addEventListener('click', downloadCurrentModalAsset);
+
+    function safeDownloadName(name, fallback = 'asset') {
+        return (name || fallback).replace(/[\\/:*?"<>|]+/g, '_').trim() || fallback;
+    }
+
+    function withExtension(name, ext) {
+        if (!ext) return name;
+        return name.toLowerCase().endsWith(ext.toLowerCase()) ? name : `${name}${ext}`;
+    }
+
+    function saveBlob(blob, filename) {
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    async function downloadCurrentModalAsset() {
+        if (!currentModalAsset) return;
+        const asset = currentModalAsset;
+        modalDownloadBtn.disabled = true;
+        try {
+            if (asset.type === 'file') {
+                const headers = {};
+                if (TOKEN) headers['Authorization'] = `Bearer ${TOKEN}`;
+                const res = await fetch(`/api/assets/${asset.id}/file`, { headers });
+                if (!res.ok) throw new Error('下载失败');
+                const blob = await res.blob();
+                const pathExt = (asset.file_path || '').match(/\.[A-Za-z0-9]{1,12}$/)?.[0] || '';
+                const filename = withExtension(safeDownloadName(asset.name, `asset-${asset.id}`), pathExt);
+                saveBlob(blob, filename);
+            } else {
+                const filename = withExtension(safeDownloadName(asset.name, `asset-${asset.id}`), '.txt');
+                saveBlob(new Blob([currentModalText || ''], { type: 'text/plain;charset=utf-8' }), filename);
+            }
+            toast('已开始下载', 'success');
+        } catch (e) {
+            toast(e.message || '下载失败', 'warning');
+        } finally {
+            modalDownloadBtn.disabled = false;
+        }
+    }
+
     function closeModal() {
         assetModal.classList.add('hidden');
         document.body.style.overflow = '';
         currentModalText = '';
+        currentModalAsset = null;
     }
 
     window._viewAsset = async (id) => {
         try {
             const asset = await api(`/assets/${id}`);
+            currentModalAsset = asset;
             modalTitle.textContent = asset.name;
+            modalCopyBtn.textContent = '📋 复制';
+            modalDownloadBtn.textContent = '下载';
+            modalDownloadBtn.disabled = false;
 
             const typeLabels = { text: '📝 文本', file: '📁 文件', link: '🔗 链接' };
             modalMeta.innerHTML = `<span class="badge badge-${asset.type}">${typeLabels[asset.type] || asset.type}</span>`

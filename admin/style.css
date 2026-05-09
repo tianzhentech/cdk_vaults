@@ -238,7 +238,7 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .modal-title { font-size: 1.05rem; font-weight: 600; margin-bottom: 4px; }
 .modal-meta { display: flex; align-items: center; gap: 6px; }
 .modal-actions { display: flex; align-items: center; gap: 8px; }
-.modal-copy-btn { padding: 6px 14px !important; font-size: 0.8rem !important; }
+.modal-action-btn { padding: 6px 14px !important; font-size: 0.8rem !important; }
 .modal-close {
     background: none; border: none; color: var(--text-3);
     font-size: 1.3rem; cursor: pointer; padding: 4px 8px;

@@ -92,8 +92,7 @@
 
     // ── 自动检测 CDK 分类 (debounced) ────────────
     function getDetectKey(codes) {
-        const firstCode = codes[0] || '';
-        return `${firstCode}|${codes.length === 1 ? 'single' : 'multi'}`;
+        return codes.join('\n');
     }
 
     function applyDetectResult(codes, data) {
@@ -260,8 +259,10 @@
     }
 
     function updateRedeemButton(codes = parseCodes()) {
+        const detectComplete = codes.length > 0 && getDetectKey(codes) === lastDetectedCode;
         redeemBtn.disabled = isSubmitting
             || codes.length === 0
+            || !detectComplete
             || (!detectedAlreadyRedeemed && detectedTotal > 0 && (detectedRemaining <= 0 || detectedInventory <= 0));
     }
 

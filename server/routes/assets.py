@@ -21,12 +21,20 @@ from fastapi.responses import FileResponse
 from server.models import AssetCreate, AssetUpdate, AssetResponse
 from server.auth import get_current_admin, verify_password
 from server.database import get_db_context
-from server.utils.cdk_allocator import assign_asset_to_pending_cdk
 
 router = APIRouter()
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
+
+
+def redeemed_count_sql(alias: str = "a") -> str:
+    return f"""
+        MAX(
+            (SELECT COUNT(*) FROM redemption_logs rl WHERE rl.asset_id = {alias}.id),
+            CASE WHEN {alias}.consumed_at IS NOT NULL THEN 1 ELSE 0 END
+        )
+    """
 
 
 def resolve_asset_file_path(file_path: str, must_exist: bool = True) -> str:
@@ -65,15 +73,10 @@ def row_to_asset(row) -> dict:
         d["redeemed_count"] = row["redeemed_count"]
     except (IndexError, KeyError):
         d["redeemed_count"] = 0
-    try:
-        d["cdk_binding_count"] = row["cdk_binding_count"]
-    except (IndexError, KeyError):
-        d["cdk_binding_count"] = 0
-    d["can_delete"] = d["redeemed_count"] == 0 and d["cdk_binding_count"] == 0
+    d["cdk_binding_count"] = 0
+    d["can_delete"] = d["redeemed_count"] == 0
     if d["redeemed_count"] > 0:
         d["delete_block_reason"] = f"资产已产生 {d['redeemed_count']} 条兑换记录，不能删除"
-    elif d["cdk_binding_count"] > 0:
-        d["delete_block_reason"] = f"资产已绑定 {d['cdk_binding_count']} 个 CDK，不能删除"
     else:
         d["delete_block_reason"] = None
     return d
@@ -81,24 +84,15 @@ def row_to_asset(row) -> dict:
 
 def get_asset_delete_block(db, asset_id: int) -> str | None:
     redeemed_count = db.execute(
-        "SELECT COUNT(*) FROM redemption_logs WHERE asset_id = ?",
+        """SELECT MAX(
+               (SELECT COUNT(*) FROM redemption_logs WHERE asset_id = assets.id),
+               CASE WHEN consumed_at IS NOT NULL THEN 1 ELSE 0 END
+           )
+           FROM assets WHERE id = ?""",
         (asset_id,),
     ).fetchone()[0]
     if redeemed_count:
         return f"资产已产生 {redeemed_count} 条兑换记录，不能删除"
-
-    binding_count = db.execute(
-        """
-        SELECT COUNT(*) FROM (
-            SELECT cdk_id FROM cdk_assets WHERE asset_id = ?
-            UNION
-            SELECT id FROM cdk_codes WHERE asset_id = ?
-        )
-        """,
-        (asset_id, asset_id),
-    ).fetchone()[0]
-    if binding_count:
-        return f"资产已绑定 {binding_count} 个 CDK，不能删除"
 
     return None
 
@@ -113,12 +107,7 @@ def find_duplicate_asset(db, name: str, category_id: int | None, asset_type: str
     return db.execute(
         f"""
         SELECT a.*, c.name as category_name,
-               (SELECT COUNT(*) FROM redemption_logs rl WHERE rl.asset_id = a.id) AS redeemed_count,
-               (SELECT COUNT(*) FROM (
-                   SELECT ca.cdk_id FROM cdk_assets ca WHERE ca.asset_id = a.id
-                   UNION
-                   SELECT cc.id FROM cdk_codes cc WHERE cc.asset_id = a.id
-               )) AS cdk_binding_count
+               {redeemed_count_sql("a")} AS redeemed_count
         FROM assets a
         LEFT JOIN categories c ON a.category_id = c.id
         WHERE a.name = ?{type_clause}
@@ -201,7 +190,6 @@ def save_file_asset(db, file: UploadFile, raw: bytes, asset_name: str, descripti
         (asset_name, description, relative_path, cat_id, now, now),
     )
     asset_id = cursor.lastrowid
-    assign_asset_to_pending_cdk(db, asset_id, cat_id)
     row = db.execute("""
         SELECT a.*, c.name as category_name FROM assets a
         LEFT JOIN categories c ON a.category_id = c.id WHERE a.id = ?
@@ -236,12 +224,7 @@ def list_assets(
         offset = (max(page, 1) - 1) * page_size
         data_q = f"""
             SELECT a.*, c.name as category_name,
-                   (SELECT COUNT(*) FROM redemption_logs rl WHERE rl.asset_id = a.id) AS redeemed_count,
-                   (SELECT COUNT(*) FROM (
-                       SELECT ca.cdk_id FROM cdk_assets ca WHERE ca.asset_id = a.id
-                       UNION
-                       SELECT cc.id FROM cdk_codes cc WHERE cc.asset_id = a.id
-                   )) AS cdk_binding_count
+                   {redeemed_count_sql("a")} AS redeemed_count
             FROM assets a
             LEFT JOIN categories c ON a.category_id = c.id
             {where}
@@ -314,7 +297,6 @@ def create_asset(body: AssetCreate, _admin: str = Depends(get_current_admin)):
             (asset_name, body.type, body.description, body.content, cat_id, now, now),
         )
         asset_id = cursor.lastrowid
-        assign_asset_to_pending_cdk(db, asset_id, cat_id)
         row = db.execute("""
             SELECT a.*, c.name as category_name FROM assets a
             LEFT JOIN categories c ON a.category_id = c.id WHERE a.id = ?
@@ -363,7 +345,6 @@ async def upload_asset(
             (asset_name, description, relative_path, cat_id, now, now),
         )
         asset_id = cursor.lastrowid
-        assign_asset_to_pending_cdk(db, asset_id, cat_id)
         row = db.execute("""
             SELECT a.*, c.name as category_name FROM assets a
             LEFT JOIN categories c ON a.category_id = c.id WHERE a.id = ?
@@ -424,7 +405,6 @@ async def upload_batch(
                    VALUES (?, 'file', ?, ?, ?, ?, ?)""",
                 (asset_name, description, relative_path, cat_id, now, now),
             )
-            assign_asset_to_pending_cdk(db, cursor.lastrowid, cat_id)
             row = db.execute("""
                 SELECT a.*, c.name as category_name FROM assets a
                 LEFT JOIN categories c ON a.category_id = c.id WHERE a.id = ?
@@ -502,8 +482,10 @@ def download_asset_file(asset_id: int, _admin: str = Depends(get_current_admin))
 def get_asset(asset_id: int, _admin: str = Depends(get_current_admin)):
     """获取单个资产详情"""
     with get_db_context() as db:
-        row = db.execute("""
-            SELECT a.*, c.name as category_name FROM assets a
+        row = db.execute(f"""
+            SELECT a.*, c.name as category_name,
+                   {redeemed_count_sql("a")} AS redeemed_count
+            FROM assets a
             LEFT JOIN categories c ON a.category_id = c.id WHERE a.id = ?
         """, (asset_id,)).fetchone()
     if not row:
@@ -534,11 +516,11 @@ def update_asset(asset_id: int, body: AssetUpdate, _admin: str = Depends(get_cur
             set_clause = ", ".join(f"{k} = ?" for k in updates)
             values = list(updates.values()) + [asset_id]
             db.execute(f"UPDATE assets SET {set_clause} WHERE id = ?", values)
-            if body.category_id is not None:
-                assign_asset_to_pending_cdk(db, asset_id, body.category_id)
 
-        row = db.execute("""
-            SELECT a.*, c.name as category_name FROM assets a
+        row = db.execute(f"""
+            SELECT a.*, c.name as category_name,
+                   {redeemed_count_sql("a")} AS redeemed_count
+            FROM assets a
             LEFT JOIN categories c ON a.category_id = c.id WHERE a.id = ?
         """, (asset_id,)).fetchone()
     return row_to_asset(row)

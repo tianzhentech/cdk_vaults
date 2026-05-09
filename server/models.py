@@ -73,8 +73,8 @@ class AssetResponse(BaseModel):
 # ──────────────────────── CDK 兑换码 ────────────────────────
 
 class CDKGenerate(BaseModel):
-    asset_id: Optional[int] = Field(default=None, description="兼容旧版：绑定资产ID")
-    category_id: Optional[int] = Field(default=None, description="绑定分类ID")
+    asset_id: Optional[int] = Field(default=None, description="兼容旧版：用资产所属分类生成 CDK")
+    category_id: Optional[int] = Field(default=None, description="兑换资产分类ID")
     count: int = Field(default=1, ge=1, le=1000, description="生成数量")
     max_uses: int = Field(default=1, ge=1, le=99999, description="每个CDK可兑换的资产数")
     prefix: str = Field(default="CDK", max_length=10, description="CDK前缀")

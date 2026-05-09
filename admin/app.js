@@ -433,10 +433,8 @@
 
     function renderAssetUsageStatus(asset) {
         const redeemed = Number(asset.redeemed_count || 0);
-        const bindings = Number(asset.cdk_binding_count || 0);
         if (redeemed > 0) return `<span class="badge badge-used">已兑换 ${redeemed}</span>`;
-        if (bindings > 0) return `<span class="badge badge-expired">已绑定 ${bindings}</span>`;
-        return '<span class="badge badge-active">可删除</span>';
+        return '<span class="badge badge-active">未兑换</span>';
     }
 
     async function loadAssets(page) {
@@ -544,7 +542,7 @@
         const ok = await confirmDialog({
             title: '批量删除资产',
             message: `确定删除选中的 ${ids.length} 个资产？`,
-            detail: '只有未绑定且未兑换的资产可以删除。',
+            detail: '只有未兑换的资产可以删除。',
             confirmText: '批量删除',
         });
         if (!ok) return;
@@ -563,7 +561,7 @@
         const ok = await confirmDialog({
             title: '删除资产',
             message: '确定删除该资产？',
-            detail: '只有未绑定且未兑换的资产可以删除。',
+            detail: '只有未兑换的资产可以删除。',
             confirmText: '删除',
         });
         if (!ok) return;
@@ -919,12 +917,12 @@
                 renderTablePagination({ id: 'cdks-pagination', tableId: 'cdks-table', data, pageHandler: '_cdkPage', pageSizeHandler: '_cdkPageSize', pageSize: cdkPageSize });
                 return;
             }
-            $('#cdks-table').innerHTML = `<table><thead><tr><th style="width:36px"><input type="checkbox" id="cdk-select-all"></th><th>兑换码</th><th>首个资产</th><th>状态</th><th>已兑/资产数</th><th>备注</th><th>操作</th></tr></thead><tbody>${
+            $('#cdks-table').innerHTML = `<table><thead><tr><th style="width:36px"><input type="checkbox" id="cdk-select-all"></th><th>兑换码</th><th>分类</th><th>状态</th><th>已兑/资产数</th><th>备注</th><th>操作</th></tr></thead><tbody>${
                 list.map(c => {
                     const canDelete = c.can_delete !== false;
                     return `<tr>
                     <td><input type="checkbox" class="cdk-chk" value="${c.id}"></td>
-                    <td class="code-text">${esc(c.code)}</td><td>${esc(c.asset_name||'待补充')}</td>
+                    <td class="code-text">${esc(c.code)}</td><td>${esc(c.category_name||'未分类')}</td>
                     <td><span class="badge badge-${c.status}">${statusLabel(c.status)}</span></td>
                     <td>${c.used_count}/${c.max_uses}</td><td>${esc(c.note)||'-'}</td>
                     <td style="display:flex;gap:6px">

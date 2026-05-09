@@ -79,7 +79,9 @@ def list_cdks(
                     c.asset_id = ?
                     OR EXISTS (
                         SELECT 1 FROM cdk_assets ca
-                        WHERE ca.cdk_id = c.id AND ca.asset_id = ?
+                        WHERE ca.cdk_id = c.id
+                          AND ca.asset_id = ?
+                          AND ca.consumed_at IS NOT NULL
                     )
                 )
             """
@@ -133,30 +135,6 @@ def generate_cdks(body: CDKGenerate, _admin: str = Depends(get_current_admin)):
             category_name = category["name"]
 
         asset_quota = body.max_uses
-        total_needed = body.count * asset_quota
-
-        if category_id is None:
-            category_clause = "a.category_id IS NULL"
-            category_params = []
-        else:
-            category_clause = "a.category_id = ?"
-            category_params = [category_id]
-
-        available_assets = db.execute(
-            f"""
-            SELECT a.id, a.name
-            FROM assets a
-            WHERE {category_clause}
-              AND a.consumed_at IS NULL
-              AND NOT EXISTS (
-                  SELECT 1 FROM cdk_assets ca
-                  WHERE ca.asset_id = a.id AND ca.consumed_at IS NULL
-              )
-            ORDER BY a.created_at ASC, a.id ASC
-            LIMIT ?
-            """,
-            [*category_params, total_needed],
-        ).fetchall()
         # 获取已存在的码用于排重
         existing = set(
             r[0] for r in db.execute("SELECT code FROM cdk_codes").fetchall()
@@ -169,17 +147,13 @@ def generate_cdks(body: CDKGenerate, _admin: str = Depends(get_current_admin)):
 
         # 批量插入
         results = []
-        asset_cursor = 0
-        for index, code in enumerate(codes):
-            assigned = available_assets[asset_cursor:asset_cursor + asset_quota]
-            asset_cursor += len(assigned)
-            primary_asset = assigned[0] if assigned else None
+        for code in codes:
             cursor = db.execute(
                 """INSERT INTO cdk_codes (code, asset_id, category_id, max_uses, note, expires_at)
                    VALUES (?, ?, ?, ?, ?, ?)""",
                 (
                     code,
-                    primary_asset["id"] if primary_asset else None,
+                    None,
                     category_id,
                     asset_quota,
                     body.note,
@@ -187,17 +161,12 @@ def generate_cdks(body: CDKGenerate, _admin: str = Depends(get_current_admin)):
                 ),
             )
             cdk_id = cursor.lastrowid
-            if assigned:
-                db.executemany(
-                    "INSERT INTO cdk_assets (cdk_id, asset_id) VALUES (?, ?)",
-                    [(cdk_id, item["id"]) for item in assigned],
-                )
             results.append(
                 CDKResponse(
                     id=cdk_id,
                     code=code,
-                    asset_id=primary_asset["id"] if primary_asset else None,
-                    asset_name=primary_asset["name"] if primary_asset else None,
+                    asset_id=None,
+                    asset_name=None,
                     category_id=category_id,
                     category_name=category_name,
                     status="active",

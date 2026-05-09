@@ -9,6 +9,7 @@ import io
 import json
 import re
 import secrets
+import sqlite3
 import zipfile
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -42,16 +43,6 @@ def _resolve_asset_file_path(asset) -> str:
     if not os.path.exists(full_path):
         raise HTTPException(status_code=500, detail=f"资产文件不存在: {asset['name']}")
     return full_path
-
-
-def _ensure_cdk_asset_rows(db, cdk):
-    """兼容旧数据：没有资产明细时，用旧 asset_id 补一条。"""
-    exists = db.execute("SELECT 1 FROM cdk_assets WHERE cdk_id = ? LIMIT 1", (cdk["id"],)).fetchone()
-    if not exists and cdk["asset_id"]:
-        db.execute(
-            "INSERT OR IGNORE INTO cdk_assets (cdk_id, asset_id) VALUES (?, ?)",
-            (cdk["id"], cdk["asset_id"]),
-        )
 
 
 def _cdk_category_name(db, cdk, asset=None):
@@ -103,105 +94,89 @@ def _validate_cdk_record(db, code: str):
         except ValueError:
             pass
 
-    _ensure_cdk_asset_rows(db, cdk)
     return cdk
 
 
-def _available_cdk_assets(db, cdk):
+def _available_inventory_assets(db, cdk, limit: int | None = None):
+    category_id = _cdk_category_id(db, cdk)
+    category_clause, category_params = _category_asset_clause(category_id)
+    limit_clause = ""
+    params = [*category_params]
+    if limit is not None:
+        limit_clause = "LIMIT ?"
+        params.append(limit)
     return db.execute(
-        """
-        SELECT ca.id AS cdk_asset_item_id, a.*
-        FROM cdk_assets ca
-        JOIN assets a ON a.id = ca.asset_id
-        WHERE ca.cdk_id = ?
-          AND ca.consumed_at IS NULL
+        f"""
+        SELECT a.*
+        FROM assets a
+        WHERE {category_clause}
           AND a.consumed_at IS NULL
-        ORDER BY ca.id ASC
+          AND NOT EXISTS (
+              SELECT 1
+              FROM cdk_assets ca
+              WHERE ca.asset_id = a.id AND ca.consumed_at IS NOT NULL
+          )
+        ORDER BY a.created_at ASC, a.id ASC
+        {limit_clause}
         """,
-        (cdk["id"],),
+        params,
     ).fetchall()
 
 
 def _cdk_counts(db, cdk) -> dict:
-    assigned_total = db.execute(
-        "SELECT COUNT(*) FROM cdk_assets WHERE cdk_id = ?",
-        (cdk["id"],),
-    ).fetchone()[0]
-    used = db.execute(
+    used_from_assets = db.execute(
         "SELECT COUNT(*) FROM cdk_assets WHERE cdk_id = ? AND consumed_at IS NOT NULL",
         (cdk["id"],),
     ).fetchone()[0]
-    bound_available = db.execute(
-        """SELECT COUNT(*)
-           FROM cdk_assets ca
-           JOIN assets a ON a.id = ca.asset_id
-           WHERE ca.cdk_id = ? AND ca.consumed_at IS NULL AND a.consumed_at IS NULL""",
+    used_from_logs = db.execute(
+        "SELECT COUNT(*) FROM redemption_logs WHERE cdk_id = ?",
         (cdk["id"],),
     ).fetchone()[0]
+    used = max(int(cdk["used_count"] or 0), used_from_assets, used_from_logs)
     category_id = _cdk_category_id(db, cdk)
     category_clause, category_params = _category_asset_clause(category_id)
-    unassigned_available = db.execute(
+    inventory = db.execute(
         f"""SELECT COUNT(*)
             FROM assets a
             WHERE {category_clause}
               AND a.consumed_at IS NULL
               AND NOT EXISTS (
-                  SELECT 1 FROM cdk_assets ca
-                  WHERE ca.asset_id = a.id AND ca.consumed_at IS NULL
+                  SELECT 1
+                  FROM cdk_assets ca
+                  WHERE ca.asset_id = a.id AND ca.consumed_at IS NOT NULL
               )""",
         category_params,
     ).fetchone()[0]
-    quota_total = max(int(cdk["max_uses"] or 1), assigned_total, used)
+    quota_total = max(int(cdk["max_uses"] or 1), used)
     remaining = max(quota_total - used, 0)
     return {
         "total": quota_total,
-        "assigned": assigned_total,
-        "available": bound_available,
-        "inventory": bound_available + unassigned_available,
-        "unassigned_inventory": unassigned_available,
+        "assigned": used,
+        "available": inventory,
+        "inventory": inventory,
+        "unassigned_inventory": inventory,
         "used": used,
         "remaining": remaining,
     }
 
 
-def _fill_cdk_assets_from_inventory(db, cdk, requested_count: int):
-    """Bind unassigned same-category assets to this CDK when it has free quota."""
+def _select_assets_for_redeem(db, cdk, requested_count: int, code: str):
     counts = _cdk_counts(db, cdk)
-    if counts["available"] >= requested_count:
-        return
+    if counts["remaining"] <= 0:
+        db.execute("UPDATE cdk_codes SET status = 'used' WHERE id = ?", (cdk["id"],))
+        raise HTTPException(status_code=400, detail=f"兑换码 {code} 已无可兑换资产")
+    if requested_count > counts["remaining"]:
+        raise HTTPException(status_code=400, detail=f"本次数量超过兑换码剩余额度，仅剩 {counts['remaining']} 个")
 
-    slots = max(counts["total"] - counts["assigned"], 0)
-    needed = min(max(requested_count - counts["available"], 0), slots)
-    if needed <= 0:
-        return
-
-    category_id = _cdk_category_id(db, cdk)
-    category_clause, category_params = _category_asset_clause(category_id)
-    rows = db.execute(
-        f"""SELECT a.id
-            FROM assets a
-            WHERE {category_clause}
-              AND a.consumed_at IS NULL
-              AND NOT EXISTS (
-                  SELECT 1 FROM cdk_assets ca
-                  WHERE ca.asset_id = a.id AND ca.consumed_at IS NULL
-              )
-            ORDER BY a.created_at ASC, a.id ASC
-            LIMIT ?""",
-        [*category_params, needed],
-    ).fetchall()
-    if not rows:
-        return
-
-    db.executemany(
-        "INSERT OR IGNORE INTO cdk_assets (cdk_id, asset_id) VALUES (?, ?)",
-        [(cdk["id"], row["id"]) for row in rows],
-    )
-    if not cdk["asset_id"]:
-        db.execute(
-            "UPDATE cdk_codes SET asset_id = ? WHERE id = ? AND asset_id IS NULL",
-            (rows[0]["id"], cdk["id"]),
+    assets = _available_inventory_assets(db, cdk, requested_count)
+    if not assets:
+        raise HTTPException(
+            status_code=400,
+            detail=f"兑换码 {code} 暂无可兑换库存，理论剩余 {counts['remaining']} / {counts['total']} 个",
         )
+    if requested_count > len(assets):
+        raise HTTPException(status_code=400, detail=f"兑换码 {code} 当前库存不足，仅剩 {len(assets)} 个")
+    return assets, counts
 
 
 def _asset_category_name(db, asset):
@@ -231,27 +206,13 @@ def _asset_response(asset, category_name=None, download_url=None) -> AssetRespon
 def _validate_cdk(db, code: str, request: Request) -> tuple:
     """验证单个 CDK，返回 (cdk_row, asset_row)，验证失败抛异常"""
     cdk = _validate_cdk_record(db, code)
-    assets = _available_cdk_assets(db, cdk)
-    if not assets:
-        counts = _cdk_counts(db, cdk)
-        if counts["used"] >= counts["total"]:
-            db.execute("UPDATE cdk_codes SET status = 'used' WHERE id = ?", (cdk["id"],))
-        raise HTTPException(status_code=400, detail=f"兑换码 {code} 已无可兑换资产")
-
+    assets, _ = _select_assets_for_redeem(db, cdk, 1, code)
     return cdk, assets[0]
 
 
 def _consume_cdk(db, cdk, asset, request: Request):
-    """消费 CDK：更新次数 + 写日志"""
+    """消费资产并记到 CDK：资产只在兑换瞬间归属某个 CDK。"""
     now = datetime.now(timezone.utc).isoformat()
-    item_id = asset["cdk_asset_item_id"]
-    item_cursor = db.execute(
-        "UPDATE cdk_assets SET consumed_at = ? WHERE id = ? AND consumed_at IS NULL",
-        (now, item_id),
-    )
-    if item_cursor.rowcount != 1:
-        raise HTTPException(status_code=409, detail="该资产已被消耗，请重试")
-
     asset_cursor = db.execute(
         """UPDATE assets
            SET consumed_at = ?, consumed_by_cdk_id = ?
@@ -261,8 +222,29 @@ def _consume_cdk(db, cdk, asset, request: Request):
     if asset_cursor.rowcount != 1:
         raise HTTPException(status_code=409, detail="该资产已被消耗，请重试")
 
+    db.execute("DELETE FROM cdk_assets WHERE asset_id = ? AND consumed_at IS NULL", (asset["id"],))
+    try:
+        db.execute(
+            "INSERT INTO cdk_assets (cdk_id, asset_id, consumed_at) VALUES (?, ?, ?)",
+            (cdk["id"], asset["id"], now),
+        )
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(status_code=409, detail="该资产已被消耗，请重试") from exc
+
+    ip = request.client.host if request.client else "unknown"
+    ua = request.headers.get("user-agent", "unknown")
+    prior_logs = db.execute(
+        "SELECT COUNT(*) FROM redemption_logs WHERE cdk_id = ?",
+        (cdk["id"],),
+    ).fetchone()[0]
+    if prior_logs == 0:
+        db.execute("UPDATE cdk_codes SET asset_id = ? WHERE id = ?", (asset["id"], cdk["id"]))
+    db.execute(
+        "INSERT INTO redemption_logs (cdk_id, asset_id, ip_address, user_agent) VALUES (?, ?, ?, ?)",
+        (cdk["id"], asset["id"], ip, ua),
+    )
     used_count = db.execute(
-        "SELECT COUNT(*) FROM cdk_assets WHERE cdk_id = ? AND consumed_at IS NOT NULL",
+        "SELECT COUNT(*) FROM redemption_logs WHERE cdk_id = ?",
         (cdk["id"],),
     ).fetchone()[0]
     total_count = max(int(cdk["max_uses"] or 1), used_count)
@@ -271,12 +253,6 @@ def _consume_cdk(db, cdk, asset, request: Request):
     db.execute(
         "UPDATE cdk_codes SET used_count = ?, status = ? WHERE id = ?",
         (used_count, new_status, cdk["id"]),
-    )
-    ip = request.client.host if request.client else "unknown"
-    ua = request.headers.get("user-agent", "unknown")
-    db.execute(
-        "INSERT INTO redemption_logs (cdk_id, asset_id, ip_address, user_agent) VALUES (?, ?, ?, ?)",
-        (cdk["id"], asset["id"], ip, ua),
     )
     return {"used_count": used_count, "remaining_count": remaining_count, "status": new_status}
 
@@ -314,9 +290,7 @@ def detect_cdk(body: RedeemRequest):
         except HTTPException:
             return {"found": False, "category_name": None, "is_codex": False}
         counts = _cdk_counts(db, cdk)
-        assets = _available_cdk_assets(db, cdk)
-        asset = assets[0] if assets else None
-        cat_name = _cdk_category_name(db, cdk, asset)
+        cat_name = _cdk_category_name(db, cdk)
         return {
             "found": True,
             "category_name": cat_name,
@@ -336,22 +310,10 @@ def redeem_cdk(body: RedeemRequest, request: Request):
 
     with get_db_context("IMMEDIATE") as db:
         cdk = _validate_cdk_record(db, code)
-        _fill_cdk_assets_from_inventory(db, cdk, body.quantity)
-        available_assets = _available_cdk_assets(db, cdk)
-        if not available_assets:
-            counts = _cdk_counts(db, cdk)
-            if counts["used"] >= counts["total"]:
-                db.execute("UPDATE cdk_codes SET status = 'used' WHERE id = ?", (cdk["id"],))
-                raise HTTPException(status_code=400, detail=f"兑换码 {code} 已无可兑换资产")
-            raise HTTPException(
-                status_code=400,
-                detail=f"兑换码 {code} 暂无可兑换库存，理论剩余 {counts['remaining']} / {counts['total']} 个",
-            )
-        if body.quantity > len(available_assets):
-            raise HTTPException(status_code=400, detail=f"当前库存不足，仅剩 {len(available_assets)} 个")
+        available_assets, _ = _select_assets_for_redeem(db, cdk, body.quantity, code)
 
         redeemed_assets = []
-        for asset in available_assets[:body.quantity]:
+        for asset in available_assets:
             _consume_cdk(db, cdk, asset, request)
             download_url = _create_download_token(db, cdk, asset) if asset["type"] == "file" else None
             redeemed_assets.append(_asset_response(asset, _asset_category_name(db, asset), download_url))
@@ -425,21 +387,9 @@ def redeem_codex(body: CodexRedeemRequest, request: Request):
     with get_db_context("IMMEDIATE") as db:
         for code in codes:
             cdk = _validate_cdk_record(db, code)
-            _fill_cdk_assets_from_inventory(db, cdk, body.quantity)
-            assets = _available_cdk_assets(db, cdk)
-            if not assets:
-                counts = _cdk_counts(db, cdk)
-                if counts["used"] >= counts["total"]:
-                    db.execute("UPDATE cdk_codes SET status = 'used' WHERE id = ?", (cdk["id"],))
-                    raise HTTPException(status_code=400, detail=f"兑换码 {code} 已无可兑换资产")
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"兑换码 {code} 暂无可兑换库存，理论剩余 {counts['remaining']} / {counts['total']} 个",
-                )
-            if body.quantity > len(assets):
-                raise HTTPException(status_code=400, detail=f"兑换码 {code} 当前库存不足，仅剩 {len(assets)} 个")
+            assets, _ = _select_assets_for_redeem(db, cdk, body.quantity, code)
 
-            for asset in assets[:body.quantity]:
+            for asset in assets:
                 # 验证是否属于 Codex 分类
                 if asset["category_id"]:
                     cat = db.execute("SELECT name FROM categories WHERE id = ?", (asset["category_id"],)).fetchone()
@@ -449,11 +399,8 @@ def redeem_codex(body: CodexRedeemRequest, request: Request):
                     raise HTTPException(status_code=400, detail=f"兑换码 {code} 对应的资产不属于 Codex 分类")
 
                 cpa = _load_cpa_json(asset)
+                _consume_cdk(db, cdk, asset, request)
                 cpa_items.append((cdk, asset, cpa))
-
-        # 全部验证通过后才消费
-        for cdk, asset, _ in cpa_items:
-            _consume_cdk(db, cdk, asset, request)
         cdk_by_id = {cdk["id"]: cdk for cdk, _, _ in cpa_items}
         cdk_counts = [_cdk_counts(db, cdk) for cdk in cdk_by_id.values()]
         remaining_count = sum(counts["remaining"] for counts in cdk_counts)

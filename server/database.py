@@ -190,6 +190,62 @@ def _ensure_unique_asset_binding(conn: sqlite3.Connection):
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_cdk_assets_asset_unique ON cdk_assets(asset_id)")
 
 
+def _remove_unconsumed_cdk_asset_bindings(conn: sqlite3.Connection):
+    """CDK assets now record consumption only; unconsumed assets stay in the shared inventory."""
+    conn.execute("DELETE FROM cdk_assets WHERE consumed_at IS NULL")
+    conn.execute("""
+        UPDATE assets
+        SET consumed_at = COALESCE(
+                consumed_at,
+                (SELECT ca.consumed_at FROM cdk_assets ca WHERE ca.asset_id = assets.id LIMIT 1)
+            ),
+            consumed_by_cdk_id = COALESCE(
+                consumed_by_cdk_id,
+                (SELECT ca.cdk_id FROM cdk_assets ca WHERE ca.asset_id = assets.id LIMIT 1)
+            )
+        WHERE id IN (SELECT asset_id FROM cdk_assets WHERE consumed_at IS NOT NULL)
+    """)
+    conn.execute("""
+        UPDATE cdk_codes
+        SET asset_id = (
+            SELECT ca.asset_id
+            FROM cdk_assets ca
+            WHERE ca.cdk_id = cdk_codes.id AND ca.consumed_at IS NOT NULL
+            ORDER BY ca.id ASC
+            LIMIT 1
+        )
+        WHERE EXISTS (
+            SELECT 1
+            FROM cdk_assets ca
+            WHERE ca.cdk_id = cdk_codes.id AND ca.consumed_at IS NOT NULL
+        )
+    """)
+    conn.execute("""
+        UPDATE cdk_codes
+        SET asset_id = NULL
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM cdk_assets ca
+            WHERE ca.cdk_id = cdk_codes.id AND ca.consumed_at IS NOT NULL
+        )
+    """)
+    conn.execute("""
+        UPDATE cdk_codes
+        SET used_count = MAX(
+            (SELECT COUNT(*) FROM cdk_assets ca WHERE ca.cdk_id = cdk_codes.id AND ca.consumed_at IS NOT NULL),
+            (SELECT COUNT(*) FROM redemption_logs rl WHERE rl.cdk_id = cdk_codes.id)
+        )
+    """)
+    conn.execute("""
+        UPDATE cdk_codes
+        SET status = CASE
+            WHEN status IN ('disabled', 'expired') THEN status
+            WHEN used_count >= max_uses THEN 'used'
+            ELSE 'active'
+        END
+    """)
+
+
 def init_db():
     """初始化数据库表结构"""
     os.makedirs(os.path.join(BASE_DIR, "uploads"), exist_ok=True)
@@ -312,6 +368,7 @@ def init_db():
           AND id IN (SELECT asset_id FROM cdk_codes WHERE used_count > 0)
     """)
     _dedupe_cdk_asset_bindings(conn)
+    _remove_unconsumed_cdk_asset_bindings(conn)
     _ensure_unique_asset_binding(conn)
 
     # ── 内置 Codex 分类 (不可删除) ─────────────────────

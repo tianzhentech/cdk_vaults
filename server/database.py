@@ -360,6 +360,22 @@ def init_db():
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
+        CREATE TABLE IF NOT EXISTS asset_upload_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            asset_id INTEGER,
+            asset_name TEXT NOT NULL DEFAULT '',
+            asset_type TEXT NOT NULL DEFAULT '',
+            category_id INTEGER,
+            source TEXT NOT NULL DEFAULT '',
+            original_filename TEXT DEFAULT '',
+            file_size INTEGER DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'created' CHECK(status IN ('created', 'skipped', 'failed')),
+            message TEXT DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE SET NULL,
+            FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL
+        );
+
         CREATE INDEX IF NOT EXISTS idx_log_cdk ON redemption_logs(cdk_id);
         CREATE INDEX IF NOT EXISTS idx_log_time ON redemption_logs(redeemed_at);
         CREATE INDEX IF NOT EXISTS idx_asset_category ON assets(category_id);
@@ -368,6 +384,11 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_cdk_assets_cdk ON cdk_assets(cdk_id);
         CREATE INDEX IF NOT EXISTS idx_cdk_assets_asset ON cdk_assets(asset_id);
         CREATE INDEX IF NOT EXISTS idx_cdk_assets_consumed ON cdk_assets(consumed_at);
+        CREATE INDEX IF NOT EXISTS idx_asset_upload_logs_time ON asset_upload_logs(created_at);
+        CREATE INDEX IF NOT EXISTS idx_asset_upload_logs_asset ON asset_upload_logs(asset_id);
+        CREATE INDEX IF NOT EXISTS idx_asset_upload_logs_category ON asset_upload_logs(category_id);
+        CREATE INDEX IF NOT EXISTS idx_asset_upload_logs_status ON asset_upload_logs(status);
+        CREATE INDEX IF NOT EXISTS idx_asset_upload_logs_source ON asset_upload_logs(source);
     """)
 
     _migrate_cdk_codes_schema(conn)

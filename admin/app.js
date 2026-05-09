@@ -175,6 +175,7 @@
                 categories: loadCategories,
                 assets: loadAssets,
                 cdks: loadCDKs,
+                'upload-logs': loadUploadLogs,
                 logs: loadLogs,
             };
             loaders[btn.dataset.page]?.();
@@ -1332,8 +1333,66 @@
     window._logPage = (p) => loadLogs(Math.max(1, p));
     window._logPageSize = (size) => { logPageSize = parseInt(size) || 20; logPage = 1; loadLogs(); };
 
+    // ── 上传记录 ──────────────────────────────────
+    let uploadLogPage = 1;
+    let uploadLogPageSize = 20;
+
+    async function loadUploadLogs(page) {
+        if (page) uploadLogPage = page;
+        try {
+            const data = normalizePagedData(await api(`/admin/upload-logs?paged=1&page=${uploadLogPage}&limit=${uploadLogPageSize}`));
+            const list = data.items || [];
+            if (!list.length) {
+                $('#upload-logs-table').innerHTML = '<div class="empty-state">暂无上传记录</div>';
+                renderTablePagination({ id: 'upload-logs-pagination', tableId: 'upload-logs-table', data, pageHandler: '_uploadLogPage', pageSizeHandler: '_uploadLogPageSize', pageSize: uploadLogPageSize });
+                return;
+            }
+            $('#upload-logs-table').innerHTML = `<table><thead><tr><th>时间</th><th>状态</th><th>来源</th><th>ID</th><th>资产</th><th>类型</th><th>分类</th><th>原文件</th><th>大小</th><th>说明</th></tr></thead><tbody>${
+                list.map(r => `<tr>
+                    <td>${fmtTime(r.created_at)}</td>
+                    <td><span class="badge ${uploadStatusClass(r.status)}">${esc(uploadStatusLabel(r.status))}</span></td>
+                    <td>${esc(uploadSourceLabel(r.source))}</td>
+                    <td>${r.asset_id || '-'}</td>
+                    <td>${esc(r.asset_name) || '-'}</td>
+                    <td>${assetTypeBadge(r.asset_type)}</td>
+                    <td>${esc(r.category_name) || '<span style="color:var(--text-3)">未分类</span>'}</td>
+                    <td>${esc(r.original_filename) || '-'}</td>
+                    <td>${formatBytes(r.file_size)}</td>
+                    <td>${esc(r.message) || '-'}</td>
+                </tr>`).join('')
+            }</tbody></table>`;
+            renderTablePagination({ id: 'upload-logs-pagination', tableId: 'upload-logs-table', data, pageHandler: '_uploadLogPage', pageSizeHandler: '_uploadLogPageSize', pageSize: uploadLogPageSize });
+        } catch (e) { console.error(e); }
+    }
+
+    window._uploadLogPage = (p) => loadUploadLogs(Math.max(1, p));
+    window._uploadLogPageSize = (size) => { uploadLogPageSize = parseInt(size) || 20; uploadLogPage = 1; loadUploadLogs(); };
+
     // ── 工具 ──────────────────────────────────────
     function statusLabel(s) { return { active:'可用', used:'已用', disabled:'已禁用', expired:'已过期' }[s] || s; }
+    function uploadStatusLabel(s) { return { created:'已新增', skipped:'已跳过', failed:'失败' }[s] || s || '-'; }
+    function uploadStatusClass(s) { return { created:'badge-active', skipped:'badge-used', failed:'badge-disabled' }[s] || 'badge-used'; }
+    function uploadSourceLabel(s) {
+        return {
+            manual_create: '手动创建',
+            single_upload: '单文件上传',
+            batch_upload: '批量上传',
+            password_upload: '密码上传',
+        }[s] || s || '-';
+    }
+    function assetTypeBadge(type) {
+        if (!type) return '-';
+        const label = { file:'文件', text:'文本', link:'链接' }[type] || type;
+        const cls = { file:'badge-file', text:'badge-text', link:'badge-link' }[type] || 'badge-used';
+        return `<span class="badge ${cls}">${esc(label)}</span>`;
+    }
+    function formatBytes(bytes) {
+        const n = Number(bytes || 0);
+        if (!n) return '-';
+        if (n < 1024) return `${n} B`;
+        if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+        return `${(n / 1024 / 1024).toFixed(1)} MB`;
+    }
     function esc(s) { if (!s) return ''; const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
     function fmtTime(s) { if (!s) return '-'; try { return new Date(s).toLocaleString('zh-CN'); } catch { return s; } }
 

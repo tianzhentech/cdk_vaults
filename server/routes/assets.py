@@ -198,6 +198,57 @@ def asset_write_result(created_items=None, skipped_items=None) -> dict:
     }
 
 
+def asset_field(asset, key: str, default=None):
+    if asset is None:
+        return default
+    if isinstance(asset, dict):
+        return asset.get(key, default)
+    try:
+        return asset[key]
+    except (KeyError, IndexError, TypeError):
+        return getattr(asset, key, default)
+
+
+def record_upload_log(
+    db,
+    *,
+    asset=None,
+    asset_id: int | None = None,
+    asset_name: str = "",
+    asset_type: str = "",
+    category_id: int | None = None,
+    source: str = "",
+    original_filename: str = "",
+    file_size: int = 0,
+    status: str = "created",
+    message: str = "",
+):
+    """记录资产新增/上传流水，便于后台追踪资产进入库存的来源。"""
+    if asset is not None:
+        asset_id = asset_field(asset, "id", asset_id)
+        asset_name = asset_field(asset, "name", asset_name) or asset_name
+        asset_type = asset_field(asset, "type", asset_type) or asset_type
+        category_id = asset_field(asset, "category_id", category_id)
+
+    db.execute(
+        """INSERT INTO asset_upload_logs (
+               asset_id, asset_name, asset_type, category_id, source,
+               original_filename, file_size, status, message
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            asset_id,
+            asset_name or "",
+            asset_type or "",
+            category_id,
+            source or "",
+            original_filename or "",
+            int(file_size or 0),
+            status,
+            message or "",
+        ),
+    )
+
+
 def require_admin_password(password: str):
     if not verify_password(password):
         raise HTTPException(
@@ -239,14 +290,37 @@ def extract_upload_asset_name(file: UploadFile, raw: bytes, explicit_name: str =
     return asset_name or file.filename or "未命名资产"
 
 
-def save_file_asset(db, file: UploadFile, raw: bytes, asset_name: str, description: str, cat_id: int | None):
-    duplicate = find_duplicate_asset(db, asset_name, cat_id, "file")
+def save_file_asset(
+    db,
+    file: UploadFile,
+    raw: bytes,
+    asset_name: str,
+    description: str,
+    cat_id: int | None,
+    *,
+    source: str,
+    duplicate_asset_type: str | None = "file",
+):
+    original_filename = file.filename or ""
+    file_size = len(raw or b"")
+    duplicate = find_duplicate_asset(db, asset_name, cat_id, duplicate_asset_type)
     if duplicate:
-        return None, row_to_asset(duplicate)
+        skipped_item = row_to_asset(duplicate)
+        record_upload_log(
+            db,
+            asset=skipped_item,
+            source=source,
+            original_filename=original_filename,
+            file_size=file_size,
+            status="skipped",
+            message="重复资产，已跳过",
+        )
+        return None, skipped_item
 
     ext = os.path.splitext(file.filename)[1] if file.filename else ""
     unique_name = f"{uuid.uuid4().hex}{ext}"
     full_path = os.path.join(UPLOAD_DIR, unique_name)
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
     with open(full_path, "wb") as f:
         f.write(raw)
 
@@ -262,7 +336,17 @@ def save_file_asset(db, file: UploadFile, raw: bytes, asset_name: str, descripti
         SELECT a.*, c.name as category_name FROM assets a
         LEFT JOIN categories c ON a.category_id = c.id WHERE a.id = ?
     """, (asset_id,)).fetchone()
-    return row_to_asset(row), None
+    created = row_to_asset(row)
+    record_upload_log(
+        db,
+        asset=created,
+        source=source,
+        original_filename=original_filename,
+        file_size=file_size,
+        status="created",
+        message="上传成功",
+    )
+    return created, None
 
 
 @router.get("")
@@ -356,6 +440,16 @@ def create_asset(body: AssetCreate, _admin: str = Depends(get_current_admin)):
     with get_db_context() as db:
         duplicate = find_duplicate_asset(db, asset_name, cat_id, body.type)
         if duplicate:
+            record_upload_log(
+                db,
+                asset=duplicate,
+                asset_name=asset_name,
+                asset_type=body.type,
+                category_id=cat_id,
+                source="manual_create",
+                status="skipped",
+                message="重复资产，已跳过",
+            )
             return asset_write_result(skipped_items=[row_to_asset(duplicate)])
 
         now = datetime.now(timezone.utc).isoformat()
@@ -369,7 +463,15 @@ def create_asset(body: AssetCreate, _admin: str = Depends(get_current_admin)):
             SELECT a.*, c.name as category_name FROM assets a
             LEFT JOIN categories c ON a.category_id = c.id WHERE a.id = ?
         """, (asset_id,)).fetchone()
-    return asset_write_result(created_items=[row_to_asset(row)])
+        created = row_to_asset(row)
+        record_upload_log(
+            db,
+            asset=created,
+            source="manual_create",
+            status="created",
+            message="创建成功",
+        )
+    return asset_write_result(created_items=[created])
 
 
 @router.post("/upload")
@@ -385,39 +487,21 @@ async def upload_asset(
     if not asset_name:
         raise HTTPException(status_code=400, detail="资产名称不能为空")
     cat_id = category_id if category_id else None
-    with get_db_context() as db:
-        duplicate = find_duplicate_asset(db, asset_name, cat_id, "file")
-        if duplicate:
-            return asset_write_result(skipped_items=[row_to_asset(duplicate)])
-
-    # 生成唯一文件名，保留原始扩展名
-    ext = os.path.splitext(file.filename)[1] if file.filename else ""
-    unique_name = f"{uuid.uuid4().hex}{ext}"
-    file_path = os.path.join(UPLOAD_DIR, unique_name)
-
+    content = await file.read()
     os.makedirs(UPLOAD_DIR, exist_ok=True)
-
-    # 保存文件
-    with open(file_path, "wb") as f:
-        content = await file.read()
-        f.write(content)
-
-    # 存储相对路径
-    relative_path = f"/uploads/{unique_name}"
-
     with get_db_context() as db:
-        now = datetime.now(timezone.utc).isoformat()
-        cursor = db.execute(
-            """INSERT INTO assets (name, type, description, file_path, category_id, created_at, updated_at)
-               VALUES (?, 'file', ?, ?, ?, ?, ?)""",
-            (asset_name, description, relative_path, cat_id, now, now),
+        created, skipped = save_file_asset(
+            db,
+            file,
+            content,
+            asset_name,
+            description,
+            cat_id,
+            source="single_upload",
         )
-        asset_id = cursor.lastrowid
-        row = db.execute("""
-            SELECT a.*, c.name as category_name FROM assets a
-            LEFT JOIN categories c ON a.category_id = c.id WHERE a.id = ?
-        """, (asset_id,)).fetchone()
-    return asset_write_result(created_items=[row_to_asset(row)])
+    if skipped:
+        return asset_write_result(skipped_items=[skipped])
+    return asset_write_result(created_items=[created])
 
 
 @router.post("/upload-batch")
@@ -454,30 +538,20 @@ async def upload_batch(
             if not asset_name:
                 asset_name = file.filename or "未命名资产"
 
-            duplicate = find_duplicate_asset(db, asset_name, cat_id)
-            if duplicate:
-                skipped.append(row_to_asset(duplicate))
-                continue
-
-            ext = os.path.splitext(file.filename)[1] if file.filename else ""
-            unique_name = f"{uuid.uuid4().hex}{ext}"
-            full_path = os.path.join(UPLOAD_DIR, unique_name)
-
-            with open(full_path, "wb") as f:
-                f.write(raw)
-
-            relative_path = f"/uploads/{unique_name}"
-            now = datetime.now(timezone.utc).isoformat()
-            cursor = db.execute(
-                """INSERT INTO assets (name, type, description, file_path, category_id, created_at, updated_at)
-                   VALUES (?, 'file', ?, ?, ?, ?, ?)""",
-                (asset_name, description, relative_path, cat_id, now, now),
+            created, skipped_item = save_file_asset(
+                db,
+                file,
+                raw,
+                asset_name,
+                description,
+                cat_id,
+                source="batch_upload",
+                duplicate_asset_type=None,
             )
-            row = db.execute("""
-                SELECT a.*, c.name as category_name FROM assets a
-                LEFT JOIN categories c ON a.category_id = c.id WHERE a.id = ?
-            """, (cursor.lastrowid,)).fetchone()
-            results.append(row_to_asset(row))
+            if skipped_item:
+                skipped.append(skipped_item)
+            elif created:
+                results.append(created)
 
     return asset_write_result(created_items=results, skipped_items=skipped)
 
@@ -523,7 +597,15 @@ async def upload_with_password(
         for upload_file in upload_files:
             raw = await upload_file.read()
             asset_name = extract_upload_asset_name(upload_file, raw, name if len(upload_files) == 1 else "")
-            created, skipped_item = save_file_asset(db, upload_file, raw, asset_name, description, cat_id)
+            created, skipped_item = save_file_asset(
+                db,
+                upload_file,
+                raw,
+                asset_name,
+                description,
+                cat_id,
+                source="password_upload",
+            )
             if skipped_item:
                 skipped.append(skipped_item)
             elif created:

@@ -3,6 +3,7 @@ CDK Vaults — 管理员认证路由
 POST /api/admin/login     登录获取 Token
 GET  /api/admin/stats      获取统计数据
 GET  /api/admin/logs       获取兑换记录
+GET  /api/admin/upload-logs 获取上传记录
 """
 
 from fastapi import APIRouter, Depends
@@ -98,6 +99,52 @@ def get_logs(
             JOIN assets a ON rl.asset_id = a.id
             LEFT JOIN categories cat ON a.category_id = cat.id
             ORDER BY rl.redeemed_at DESC
+            LIMIT ? OFFSET ?
+        """, (limit, offset)).fetchall()
+    items = [dict(r) for r in rows]
+    if not paged:
+        return items
+    pages = (total + limit - 1) // limit if total else 1
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": limit,
+        "pages": pages,
+    }
+
+
+@router.get("/upload-logs")
+def get_upload_logs(
+    page: int = 1,
+    limit: int = 50,
+    paged: bool = False,
+    _admin: str = Depends(get_current_admin),
+):
+    """获取资产上传/新增记录列表"""
+    page = max(page, 1)
+    limit = min(max(limit, 1), 500)
+    offset = (page - 1) * limit
+    with get_db_context() as db:
+        total = db.execute("SELECT COUNT(*) FROM asset_upload_logs").fetchone()[0]
+        rows = db.execute("""
+            SELECT
+                ul.id,
+                ul.asset_id,
+                COALESCE(NULLIF(ul.asset_name, ''), a.name, '') AS asset_name,
+                COALESCE(NULLIF(ul.asset_type, ''), a.type, '') AS asset_type,
+                ul.category_id,
+                cat.name AS category_name,
+                ul.source,
+                ul.original_filename,
+                ul.file_size,
+                ul.status,
+                ul.message,
+                ul.created_at
+            FROM asset_upload_logs ul
+            LEFT JOIN assets a ON a.id = ul.asset_id
+            LEFT JOIN categories cat ON cat.id = COALESCE(ul.category_id, a.category_id)
+            ORDER BY ul.created_at DESC, ul.id DESC
             LIMIT ? OFFSET ?
         """, (limit, offset)).fetchall()
     items = [dict(r) for r in rows]

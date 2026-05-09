@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
 from fastapi.responses import FileResponse
-from server.models import AssetCreate, AssetUpdate, AssetResponse
+from server.models import AssetCreate, AssetUpdate, AssetRedeemStatusUpdate, AssetResponse
 from server.auth import get_current_admin, verify_password
 from server.database import get_db_context
 
@@ -95,6 +95,64 @@ def get_asset_delete_block(db, asset_id: int) -> str | None:
         return f"资产已产生 {redeemed_count} 条兑换记录，不能删除"
 
     return None
+
+
+def refresh_cdk_usage(db, cdk_ids):
+    """Recalculate CDK counters after an admin manually changes asset redemption status."""
+    for cdk_id in {int(cdk_id) for cdk_id in cdk_ids if cdk_id}:
+        cdk = db.execute("SELECT * FROM cdk_codes WHERE id = ?", (cdk_id,)).fetchone()
+        if not cdk:
+            continue
+
+        used_count = db.execute(
+            """
+            SELECT COUNT(DISTINCT asset_id)
+            FROM (
+                SELECT asset_id FROM redemption_logs WHERE cdk_id = ?
+                UNION ALL
+                SELECT asset_id FROM cdk_assets WHERE cdk_id = ? AND consumed_at IS NOT NULL
+            )
+            """,
+            (cdk_id, cdk_id),
+        ).fetchone()[0]
+        primary_asset = db.execute(
+            """
+            SELECT asset_id
+            FROM (
+                SELECT asset_id, id AS sort_id FROM redemption_logs WHERE cdk_id = ?
+                UNION ALL
+                SELECT asset_id, id AS sort_id FROM cdk_assets WHERE cdk_id = ? AND consumed_at IS NOT NULL
+            )
+            GROUP BY asset_id
+            ORDER BY MIN(sort_id) ASC, asset_id ASC
+            LIMIT 1
+            """,
+            (cdk_id, cdk_id),
+        ).fetchone()
+
+        status = cdk["status"]
+        if status not in ("disabled", "expired"):
+            status = "used" if int(used_count or 0) >= int(cdk["max_uses"] or 1) else "active"
+
+        db.execute(
+            "UPDATE cdk_codes SET used_count = ?, asset_id = ?, status = ? WHERE id = ?",
+            (
+                int(used_count or 0),
+                primary_asset["asset_id"] if primary_asset else None,
+                status,
+                cdk_id,
+            ),
+        )
+
+
+def asset_with_usage(db, asset_id: int):
+    return db.execute(f"""
+        SELECT a.*, c.name as category_name,
+               {redeemed_count_sql("a")} AS redeemed_count
+        FROM assets a
+        LEFT JOIN categories c ON a.category_id = c.id
+        WHERE a.id = ?
+    """, (asset_id,)).fetchone()
 
 
 def find_duplicate_asset(db, name: str, category_id: int | None, asset_type: str | None = None):
@@ -478,16 +536,70 @@ def download_asset_file(asset_id: int, _admin: str = Depends(get_current_admin))
     return FileResponse(full_path, filename=row["name"], media_type="application/octet-stream")
 
 
+@router.put("/{asset_id}/redeem-status", response_model=AssetResponse)
+def update_asset_redeem_status(
+    asset_id: int,
+    body: AssetRedeemStatusUpdate,
+    _admin: str = Depends(get_current_admin),
+):
+    """管理员手动调整资产是否进入库存池。"""
+    with get_db_context(transaction_mode="IMMEDIATE") as db:
+        existing = db.execute("SELECT * FROM assets WHERE id = ?", (asset_id,)).fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="资产不存在")
+
+        now = datetime.now(timezone.utc).isoformat()
+        affected_cdk_ids = {
+            row["cdk_id"]
+            for row in db.execute(
+                """
+                SELECT cdk_id FROM redemption_logs WHERE asset_id = ?
+                UNION
+                SELECT cdk_id FROM cdk_assets WHERE asset_id = ?
+                UNION
+                SELECT consumed_by_cdk_id AS cdk_id FROM assets
+                WHERE id = ? AND consumed_by_cdk_id IS NOT NULL
+                UNION
+                SELECT id AS cdk_id FROM cdk_codes WHERE asset_id = ?
+                """,
+                (asset_id, asset_id, asset_id, asset_id),
+            ).fetchall()
+            if row["cdk_id"] is not None
+        }
+
+        if body.redeemed:
+            db.execute("DELETE FROM cdk_assets WHERE asset_id = ? AND consumed_at IS NULL", (asset_id,))
+            db.execute(
+                """UPDATE assets
+                   SET consumed_at = COALESCE(consumed_at, ?),
+                       updated_at = ?
+                   WHERE id = ?""",
+                (now, now, asset_id),
+            )
+            message = "资产已标记为已兑换"
+        else:
+            db.execute("DELETE FROM file_download_tokens WHERE asset_id = ?", (asset_id,))
+            db.execute("DELETE FROM redemption_logs WHERE asset_id = ?", (asset_id,))
+            db.execute("DELETE FROM cdk_assets WHERE asset_id = ?", (asset_id,))
+            db.execute(
+                "UPDATE assets SET consumed_at = NULL, consumed_by_cdk_id = NULL, updated_at = ? WHERE id = ?",
+                (now, asset_id),
+            )
+            refresh_cdk_usage(db, affected_cdk_ids)
+            message = "资产已标记为未兑换"
+
+        row = asset_with_usage(db, asset_id)
+
+    result = row_to_asset(row)
+    result["message"] = message
+    return result
+
+
 @router.get("/{asset_id}", response_model=AssetResponse)
 def get_asset(asset_id: int, _admin: str = Depends(get_current_admin)):
     """获取单个资产详情"""
     with get_db_context() as db:
-        row = db.execute(f"""
-            SELECT a.*, c.name as category_name,
-                   {redeemed_count_sql("a")} AS redeemed_count
-            FROM assets a
-            LEFT JOIN categories c ON a.category_id = c.id WHERE a.id = ?
-        """, (asset_id,)).fetchone()
+        row = asset_with_usage(db, asset_id)
     if not row:
         raise HTTPException(status_code=404, detail="资产不存在")
     return row_to_asset(row)

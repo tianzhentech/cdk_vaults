@@ -483,6 +483,11 @@
         return '<span class="badge badge-active">未兑换</span>';
     }
 
+    function renderAssetStatusAction(asset) {
+        const redeemed = Number(asset.redeemed_count || 0) > 0;
+        return `<button class="icon-btn" onclick="window._toggleAssetRedeemStatus(${asset.id}, ${redeemed ? 'false' : 'true'})">${redeemed ? '设未兑换' : '设已兑换'}</button>`;
+    }
+
     async function loadAssets(page) {
         if (page) assetPage = page;
         await populateCategorySelects();
@@ -517,6 +522,7 @@
                     <td>${fmtTime(a.created_at)}</td>
                     <td style="display:flex;gap:6px">
                         <button class="icon-btn" onclick="window._viewAsset(${a.id})">查看</button>
+                        ${renderAssetStatusAction(a)}
                         <button class="icon-btn danger${canDelete ? '' : ' disabled'}" onclick="window.${canDelete ? '_deleteAsset' : '_explainAssetDelete'}(${a.id})">删除</button>
                     </td>
                 </tr>`;
@@ -616,6 +622,29 @@
 
     window._explainAssetDelete = (id) => {
         toast(assetDeleteReasons.get(id) || '该资产已有 CDK 或兑换记录，不能删除', 'warning');
+    };
+
+    window._toggleAssetRedeemStatus = async (id, redeemed) => {
+        const ok = await confirmDialog({
+            title: redeemed ? '标记为已兑换' : '标记为未兑换',
+            message: redeemed ? '确定将该资产标记为已兑换？' : '确定将该资产改回未兑换？',
+            detail: redeemed
+                ? '该资产会从可兑换库存中移除，不绑定任何 CDK。'
+                : '该操作会清除该资产关联的兑换记录、下载链接和 CDK 消耗记录，并重新放回库存。',
+            confirmText: redeemed ? '设为已兑换' : '设为未兑换',
+            danger: !redeemed,
+        });
+        if (!ok) return;
+        try {
+            await api(`/assets/${id}/redeem-status`, {
+                method: 'PUT',
+                body: JSON.stringify({ redeemed }),
+            });
+            toast(redeemed ? '已标记为已兑换' : '已标记为未兑换', 'success');
+            loadAssets();
+        } catch (e) {
+            toast(e.message);
+        }
     };
 
     // ── 资产预览模态框 ────────────────────────────

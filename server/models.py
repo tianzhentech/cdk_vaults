@@ -51,6 +51,10 @@ class AssetUpdate(BaseModel):
     category_id: Optional[int] = None
 
 
+class AssetRedeemStatusUpdate(BaseModel):
+    redeemed: bool = Field(..., description="是否标记为已兑换")
+
+
 class AssetResponse(BaseModel):
     id: int
     name: str

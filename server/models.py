@@ -157,9 +157,13 @@ class TokenResponse(BaseModel):
 
 class StatsResponse(BaseModel):
     total_assets: int
+    unredeemed_assets: int = 0
+    redeemed_assets: int = 0
     total_cdks: int
     active_cdks: int
     used_cdks: int
+    cdk_remaining_quota: int = 0
+    asset_gap: int = 0
     total_redemptions: int
     recent_redemptions: list = []
 

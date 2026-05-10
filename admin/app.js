@@ -232,11 +232,12 @@
         try {
             loadNoticeSettings();
             const s = await api('/admin/stats');
+            const gapClass = Number(s.asset_gap || 0) > 0 ? 'rose' : 'emerald';
             $('#stats-grid').innerHTML = `
-                <div class="stat-card"><div class="stat-label">总资产</div><div class="stat-value purple">${s.total_assets}</div></div>
-                <div class="stat-card"><div class="stat-label">CDK 总数</div><div class="stat-value blue">${s.total_cdks}</div></div>
-                <div class="stat-card"><div class="stat-label">可用 CDK</div><div class="stat-value emerald">${s.active_cdks}</div></div>
-                <div class="stat-card"><div class="stat-label">总兑换次数</div><div class="stat-value amber">${s.total_redemptions}</div></div>
+                <div class="stat-card"><div class="stat-label">未兑换资产</div><div class="stat-value emerald">${s.unredeemed_assets}</div><div class="stat-hint">当前可进入兑换池的资产</div></div>
+                <div class="stat-card"><div class="stat-label">已兑换资产</div><div class="stat-value amber">${s.redeemed_assets}</div><div class="stat-hint">有兑换记录或已标记兑换</div></div>
+                <div class="stat-card"><div class="stat-label">CDK 剩余额度</div><div class="stat-value blue">${s.cdk_remaining_quota}</div><div class="stat-hint">可用 CDK 未兑换额度合计</div></div>
+                <div class="stat-card"><div class="stat-label">资产缺口</div><div class="stat-value ${gapClass}">${s.asset_gap}</div><div class="stat-hint">CDK 剩余额度 - 未兑换资产</div></div>
             `;
             if (s.recent_redemptions.length) {
                 $('#recent-logs').innerHTML = `<table><thead><tr><th>CDK</th><th>分类</th><th>资产</th><th>IP</th><th>时间</th></tr></thead><tbody>${

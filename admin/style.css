@@ -124,6 +124,7 @@ body { font-family: var(--font); background: var(--bg-primary); color: var(--tex
 .stat-value.emerald { color: var(--emerald); }
 .stat-value.amber { color: var(--amber); }
 .stat-value.rose { color: var(--rose); }
+.stat-hint { margin-top: 6px; color: var(--text-3); font-size: 0.75rem; line-height: 1.4; }
 
 /* ── 通用卡片 ───────────────────────────────────── */
 .section-card {

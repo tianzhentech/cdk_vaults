@@ -50,9 +50,50 @@ def get_stats(_admin: str = Depends(get_current_admin)):
     """获取系统统计数据"""
     with get_db_context() as db:
         total_assets = db.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
+        unredeemed_assets = db.execute("""
+            SELECT COUNT(*)
+            FROM assets a
+            WHERE a.consumed_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM redemption_logs rl WHERE rl.asset_id = a.id
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM cdk_assets ca
+                  WHERE ca.asset_id = a.id AND ca.consumed_at IS NOT NULL
+              )
+        """).fetchone()[0]
+        redeemed_assets = max(total_assets - unredeemed_assets, 0)
         total_cdks = db.execute("SELECT COUNT(*) FROM cdk_codes").fetchone()[0]
         active_cdks = db.execute("SELECT COUNT(*) FROM cdk_codes WHERE status='active'").fetchone()[0]
         used_cdks = db.execute("SELECT COUNT(*) FROM cdk_codes WHERE status='used'").fetchone()[0]
+        cdk_remaining_quota = db.execute("""
+            SELECT COALESCE(SUM(
+                CASE
+                    WHEN quota_total > used_total THEN quota_total - used_total
+                    ELSE 0
+                END
+            ), 0)
+            FROM (
+                SELECT
+                    MAX(
+                        COALESCE(c.max_uses, 1),
+                        MAX(
+                            COALESCE(c.used_count, 0),
+                            (SELECT COUNT(*) FROM cdk_assets ca WHERE ca.cdk_id = c.id AND ca.consumed_at IS NOT NULL),
+                            (SELECT COUNT(*) FROM redemption_logs rl WHERE rl.cdk_id = c.id)
+                        )
+                    ) AS quota_total,
+                    MAX(
+                        COALESCE(c.used_count, 0),
+                        (SELECT COUNT(*) FROM cdk_assets ca WHERE ca.cdk_id = c.id AND ca.consumed_at IS NOT NULL),
+                        (SELECT COUNT(*) FROM redemption_logs rl WHERE rl.cdk_id = c.id)
+                    ) AS used_total
+                FROM cdk_codes c
+                WHERE c.status = 'active'
+            )
+        """).fetchone()[0]
+        asset_gap = max(int(cdk_remaining_quota or 0) - int(unredeemed_assets or 0), 0)
         total_redemptions = db.execute("SELECT COUNT(*) FROM redemption_logs").fetchone()[0]
 
         recent = db.execute("""
@@ -70,9 +111,13 @@ def get_stats(_admin: str = Depends(get_current_admin)):
 
     return StatsResponse(
         total_assets=total_assets,
+        unredeemed_assets=unredeemed_assets,
+        redeemed_assets=redeemed_assets,
         total_cdks=total_cdks,
         active_cdks=active_cdks,
         used_cdks=used_cdks,
+        cdk_remaining_quota=cdk_remaining_quota,
+        asset_gap=asset_gap,
         total_redemptions=total_redemptions,
         recent_redemptions=recent_list,
     )

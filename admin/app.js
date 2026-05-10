@@ -257,6 +257,8 @@
     const noticeContent = $('#notice-content');
     const noticeStatus = $('#notice-status');
     const noticeSaveBtn = $('#notice-save-btn');
+    const passwordStatus = $('#password-status');
+    const passwordSaveBtn = $('#password-save-btn');
 
     function updateNoticeStatus() {
         const enabled = noticeEnabled.checked;
@@ -295,6 +297,41 @@
             toast('兑换页通知已保存', 'success');
         } catch (e) {
             toast(e.message);
+        }
+    });
+
+    function clearPasswordForm() {
+        $('#admin-current-password').value = '';
+        $('#admin-new-password').value = '';
+        $('#admin-confirm-password').value = '';
+    }
+
+    passwordSaveBtn.addEventListener('click', async () => {
+        const currentPassword = $('#admin-current-password').value;
+        const newPassword = $('#admin-new-password').value;
+        const confirmPassword = $('#admin-confirm-password').value;
+        if (!currentPassword) return toast('请输入当前密码', 'warning');
+        if (newPassword.length < 6) return toast('新密码至少 6 位', 'warning');
+        if (newPassword !== confirmPassword) return toast('两次输入的新密码不一致', 'warning');
+        try {
+            passwordSaveBtn.disabled = true;
+            await api('/admin/password', {
+                method: 'PUT',
+                body: JSON.stringify({
+                    current_password: currentPassword,
+                    new_password: newPassword,
+                }),
+            });
+            clearPasswordForm();
+            passwordStatus.textContent = '密码已修改，下次登录请使用新密码';
+            passwordStatus.classList.add('active');
+            toast('管理员密码已修改', 'success');
+        } catch (e) {
+            passwordStatus.textContent = e.message || '修改失败';
+            passwordStatus.classList.remove('active');
+            toast(e.message);
+        } finally {
+            passwordSaveBtn.disabled = false;
         }
     });
 

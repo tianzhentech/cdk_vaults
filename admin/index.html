@@ -67,6 +67,32 @@
                         <button id="notice-save-btn" class="primary-btn">保存通知</button>
                     </div>
                 </div>
+                <div class="section-card password-settings-card">
+                    <div class="notice-settings-header">
+                        <div>
+                            <h3>管理员密码</h3>
+                            <p>修改后，后台登录和密码上传接口都会使用新密码。</p>
+                        </div>
+                    </div>
+                    <div class="form-grid password-form-grid">
+                        <div class="form-group">
+                            <label>当前密码</label>
+                            <input type="password" id="admin-current-password" autocomplete="current-password" placeholder="输入当前密码">
+                        </div>
+                        <div class="form-group">
+                            <label>新密码</label>
+                            <input type="password" id="admin-new-password" autocomplete="new-password" placeholder="至少 6 位">
+                        </div>
+                        <div class="form-group">
+                            <label>确认新密码</label>
+                            <input type="password" id="admin-confirm-password" autocomplete="new-password" placeholder="再次输入新密码">
+                        </div>
+                    </div>
+                    <div class="notice-settings-actions">
+                        <span id="password-status" class="notice-status">建议定期更换管理员密码</span>
+                        <button id="password-save-btn" class="primary-btn">修改密码</button>
+                    </div>
+                </div>
                 <div class="section-card">
                     <h3>最近兑换</h3>
                     <div id="recent-logs" class="table-wrap"></div>

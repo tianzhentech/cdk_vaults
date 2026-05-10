@@ -7,8 +7,8 @@ GET  /api/admin/upload-logs 获取上传记录
 """
 
 from fastapi import APIRouter, Depends
-from server.models import AdminLogin, TokenResponse, StatsResponse, RedemptionLogResponse, RedeemNoticeSettings
-from server.auth import verify_password, create_token, get_current_admin
+from server.models import AdminLogin, TokenResponse, StatsResponse, RedemptionLogResponse, RedeemNoticeSettings, AdminPasswordUpdate
+from server.auth import verify_password, create_token, get_current_admin, set_admin_password
 from server.database import get_db_context, get_redeem_notice, set_redeem_notice
 from server.event_bus import publish_update
 from fastapi import HTTPException
@@ -29,6 +29,17 @@ def admin_login(body: AdminLogin):
 def verify_token(_admin: str = Depends(get_current_admin)):
     """验证 Token 是否有效"""
     return {"valid": True}
+
+
+@router.put("/password")
+def update_admin_password(body: AdminPasswordUpdate, _admin: str = Depends(get_current_admin)):
+    """修改管理员密码。"""
+    if not verify_password(body.current_password):
+        raise HTTPException(status_code=400, detail="当前密码错误")
+    if body.current_password == body.new_password:
+        raise HTTPException(status_code=400, detail="新密码不能和当前密码相同")
+    set_admin_password(body.new_password)
+    return {"success": True, "message": "管理员密码已修改"}
 
 
 @router.get("/notice")

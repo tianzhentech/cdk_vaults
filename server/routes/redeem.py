@@ -324,20 +324,70 @@ def _codex_asset_label(asset, cpa: dict) -> str:
 
 
 def _validate_codex_payload_format(cpa: dict, fmt: str, code: str, asset) -> None:
+    ok, message = _codex_payload_format_compatible(cpa, fmt, asset)
+    if not ok:
+        raise HTTPException(status_code=400, detail=message)
+
+
+def _codex_format_label(fmt: str) -> str:
+    return {
+        "text": "文本账号密码",
+        "cpa": "CPA",
+        "sub2api_single": "Sub2API",
+        "sub2api_multi": "auth.json",
+        "auth_json": "auth.json",
+    }.get(fmt, fmt)
+
+
+def _codex_payload_format_compatible(cpa: dict, fmt: str, asset) -> tuple[bool, str]:
     has_access_token = bool(cpa_access_token(cpa))
     has_passwords = cpa_has_text_passwords(cpa)
     label = _codex_asset_label(asset, cpa)
 
     if not has_access_token and fmt != "text":
-        raise HTTPException(
-            status_code=400,
-            detail=f"{label} 缺少 access_token，只能兑换为文本格式",
-        )
+        return False, f"{label} 缺少 access_token，只能兑换为文本格式"
     if has_access_token and not has_passwords and fmt == "text":
+        return False, f"{label} 缺少 GPT密码/邮箱密码字段，只能兑换为 CPA、Sub2API 或 auth.json 格式"
+    return True, ""
+
+
+def _select_codex_assets_for_format(db, cdk, requested_count: int, code: str, fmt: str):
+    counts = _cdk_counts(db, cdk)
+    if counts["remaining"] <= 0:
+        db.execute("UPDATE cdk_codes SET status = 'used' WHERE id = ?", (cdk["id"],))
+        raise HTTPException(status_code=400, detail=f"兑换码 {code} 已无可兑换资产")
+    if requested_count > counts["remaining"]:
+        raise HTTPException(status_code=400, detail=f"本次数量超过兑换码剩余额度，仅剩 {counts['remaining']} 个")
+
+    selected = []
+    skipped = []
+    for asset in _available_inventory_assets(db, cdk):
+        if asset["category_id"]:
+            cat = db.execute("SELECT name FROM categories WHERE id = ?", (asset["category_id"],)).fetchone()
+            if not cat or cat["name"] != CODEX_CATEGORY_NAME:
+                raise HTTPException(status_code=400, detail=f"兑换码 {code} 对应的资产不属于 Codex 分类")
+        else:
+            raise HTTPException(status_code=400, detail=f"兑换码 {code} 对应的资产不属于 Codex 分类")
+
+        cpa = _load_cpa_json(asset)
+        ok, message = _codex_payload_format_compatible(cpa, fmt, asset)
+        if not ok:
+            skipped.append({"asset": asset, "reason": message})
+            continue
+        selected.append((asset, cpa))
+        if len(selected) >= requested_count:
+            break
+
+    if len(selected) < requested_count:
+        skipped_hint = ""
+        if skipped:
+            skipped_hint = f"，已跳过 {len(skipped)} 个不符合 {_codex_format_label(fmt)} 格式的账号"
         raise HTTPException(
             status_code=400,
-            detail=f"{label} 缺少 GPT密码/邮箱密码字段，只能兑换为 CPA、Sub2API 或 auth.json 格式",
+            detail=f"兑换码 {code} 当前没有足够符合 {_codex_format_label(fmt)} 格式的库存{skipped_hint}，请换 CPA/Sub2API/auth.json 格式或补充对应账号",
         )
+
+    return selected, counts, len(skipped)
 
 
 # ── CDK 探测 (不消费) ─────────────────────────────────
@@ -464,6 +514,7 @@ def redeem_codex(body: CodexRedeemRequest, request: Request):
     reexported = False
     allow_reexport = len(codes) == 1
     consumed_any = False
+    skipped_incompatible = 0
 
     with get_db_context("IMMEDIATE") as db:
         for code in codes:
@@ -480,21 +531,17 @@ def redeem_codex(body: CodexRedeemRequest, request: Request):
             if should_reexport:
                 assets = redeemed_assets
                 reexported = True
+                selected_assets = [(asset, _load_cpa_json(asset)) for asset in assets]
             else:
                 cdk = _validate_cdk_record(db, code)
-                assets, _ = _select_assets_for_redeem(db, cdk, body.quantity, code)
+                selected_assets, _, skipped_count = _select_codex_assets_for_format(db, cdk, body.quantity, code, fmt)
+                skipped_incompatible += skipped_count
 
-            for asset in assets:
-                # 验证是否属于 Codex 分类
-                if asset["category_id"]:
-                    cat = db.execute("SELECT name FROM categories WHERE id = ?", (asset["category_id"],)).fetchone()
-                    if not cat or cat["name"] != CODEX_CATEGORY_NAME:
-                        raise HTTPException(status_code=400, detail=f"兑换码 {code} 对应的资产不属于 Codex 分类")
-                else:
-                    raise HTTPException(status_code=400, detail=f"兑换码 {code} 对应的资产不属于 Codex 分类")
-
-                cpa = _load_cpa_json(asset)
-                _validate_codex_payload_format(cpa, fmt, code, asset)
+            for asset, cpa in selected_assets:
+                if should_reexport:
+                    ok, message = _codex_payload_format_compatible(cpa, fmt, asset)
+                    if not ok:
+                        raise HTTPException(status_code=400, detail=message)
                 if not should_reexport:
                     _consume_cdk(db, cdk, asset, request)
                     consumed_any = True
@@ -513,6 +560,7 @@ def redeem_codex(body: CodexRedeemRequest, request: Request):
         "X-Remaining-Count": str(remaining_count),
         "X-Inventory-Count": str(inventory_count),
         "X-Reexported": "1" if reexported else "0",
+        "X-Skipped-Incompatible-Count": str(skipped_incompatible),
     }
     if fmt == "cpa":
         return _export_cpa(cpa_items, response_headers)
@@ -647,6 +695,7 @@ def _export_text(items: list, headers: dict | None = None) -> JSONResponse:
             "remaining_count": int(headers.get("X-Remaining-Count", 0)),
             "inventory_count": int(headers.get("X-Inventory-Count", 0)),
             "reexported": headers.get("X-Reexported") == "1",
+            "skipped_incompatible_count": int(headers.get("X-Skipped-Incompatible-Count", 0)),
         },
         headers=headers,
     )

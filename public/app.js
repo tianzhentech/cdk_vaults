@@ -348,6 +348,7 @@
         const redeemedCount = parseInt(res.headers.get('x-redeemed-count')) || quantity * codes.length;
         const remainingCount = parseInt(res.headers.get('x-remaining-count')) || 0;
         const reexported = res.headers.get('x-reexported') === '1';
+        const skippedIncompatibleCount = parseInt(res.headers.get('x-skipped-incompatible-count')) || 0;
 
         if (format === 'text') {
             const data = await res.json();
@@ -363,6 +364,7 @@
                 count: data.redeemed_count || redeemedCount,
                 remainingCount: data.remaining_count ?? remainingCount,
                 reexported: data.reexported === true || reexported,
+                skippedIncompatibleCount,
             });
             return;
         }
@@ -382,7 +384,7 @@
 
         const inventoryCount = parseInt(res.headers.get('x-inventory-count')) || 0;
         setQuotaInfo(remainingCount, detectedTotal, true, inventoryCount);
-        showDownloadResult(redeemedCount, filename, format, remainingCount, reexported);
+        showDownloadResult(redeemedCount, filename, format, remainingCount, reexported, skippedIncompatibleCount);
     }
 
     async function doNormalRedeem(code) {
@@ -407,7 +409,11 @@
     }
 
     // ── 显示下载结果 ─────────────────────────────
-    function showDownloadResult(count, filename, format, remainingCount = 0, reexported = false) {
+    function formatSkippedHint(count) {
+        return count > 0 ? ` · 已跳过 ${count} 个不符合当前格式的账号` : '';
+    }
+
+    function showDownloadResult(count, filename, format, remainingCount = 0, reexported = false, skippedIncompatibleCount = 0) {
         const fmtLabels = {
             cpa: 'CPA 格式（OAuth JSON）',
             sub2api_single: 'Sub2API 合并文件（需 access_token）',
@@ -417,7 +423,7 @@
         };
         resultName.textContent = reexported
             ? `该 CDK 已兑换过，已重新导出 ${count} 个资产`
-            : `已兑换 ${count} 个资产 · 剩余 ${remainingCount} 个`;
+            : `已兑换 ${count} 个资产 · 剩余 ${remainingCount} 个${formatSkippedHint(skippedIncompatibleCount)}`;
         resultBody.innerHTML = `
             <div class="download-success">
                 <div class="dl-icon">⬇</div>
@@ -431,10 +437,10 @@
         resultSection.classList.remove('hidden');
     }
 
-    function showTextResult({ text, filename, count, remainingCount = 0, reexported = false }) {
+    function showTextResult({ text, filename, count, remainingCount = 0, reexported = false, skippedIncompatibleCount = 0 }) {
         resultName.textContent = reexported
             ? `该 CDK 已兑换过，已重新导出 ${count} 个资产`
-            : `已兑换 ${count} 个资产 · 剩余 ${remainingCount} 个`;
+            : `已兑换 ${count} 个资产 · 剩余 ${remainingCount} 个${formatSkippedHint(skippedIncompatibleCount)}`;
 
         const box = document.createElement('div');
         box.className = 'text-export-result';

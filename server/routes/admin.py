@@ -131,6 +131,7 @@ def get_logs(
     page: int = 1,
     limit: int = 50,
     paged: bool = False,
+    search: str = "",
     _admin: str = Depends(get_current_admin),
 ):
     """获取兑换记录列表"""
@@ -138,17 +139,37 @@ def get_logs(
     limit = min(max(limit, 1), 500)
     offset = (page - 1) * limit
     with get_db_context() as db:
-        total = db.execute("SELECT COUNT(*) FROM redemption_logs").fetchone()[0]
-        rows = db.execute("""
-            SELECT rl.id, c.code as cdk_code, cat.name as category_name, a.name as asset_name,
-                   rl.ip_address, rl.user_agent, rl.redeemed_at
+        base = """
             FROM redemption_logs rl
             JOIN cdk_codes c ON rl.cdk_id = c.id
             JOIN assets a ON rl.asset_id = a.id
             LEFT JOIN categories cat ON a.category_id = cat.id
+            WHERE 1=1
+        """
+        params = []
+        search = search.strip()
+        if search:
+            like = f"%{search}%"
+            base += """
+                AND (
+                    c.code LIKE ?
+                    OR COALESCE(cat.name, '') LIKE ?
+                    OR a.name LIKE ?
+                    OR COALESCE(rl.ip_address, '') LIKE ?
+                    OR COALESCE(rl.user_agent, '') LIKE ?
+                )
+            """
+            params.extend([like, like, like, like, like])
+
+        total = db.execute(f"SELECT COUNT(*) {base}", params).fetchone()[0]
+        rows = db.execute(f"""
+            SELECT rl.id, c.code as cdk_code, cat.name as category_name,
+                   a.id as asset_id, a.name as asset_name, a.type as asset_type,
+                   rl.ip_address, rl.user_agent, rl.redeemed_at
+            {base}
             ORDER BY rl.redeemed_at DESC
             LIMIT ? OFFSET ?
-        """, (limit, offset)).fetchall()
+        """, params + [limit, offset]).fetchall()
     items = [dict(r) for r in rows]
     if not paged:
         return items
@@ -167,6 +188,7 @@ def get_upload_logs(
     page: int = 1,
     limit: int = 50,
     paged: bool = False,
+    search: str = "",
     _admin: str = Depends(get_current_admin),
 ):
     """获取资产上传/新增记录列表"""
@@ -174,8 +196,44 @@ def get_upload_logs(
     limit = min(max(limit, 1), 500)
     offset = (page - 1) * limit
     with get_db_context() as db:
-        total = db.execute("SELECT COUNT(*) FROM asset_upload_logs").fetchone()[0]
-        rows = db.execute("""
+        base = """
+            FROM asset_upload_logs ul
+            LEFT JOIN assets a ON a.id = ul.asset_id
+            LEFT JOIN categories cat ON cat.id = COALESCE(ul.category_id, a.category_id)
+            WHERE 1=1
+        """
+        params = []
+        search = search.strip()
+        if search:
+            like = f"%{search}%"
+            base += """
+                AND (
+                    COALESCE(NULLIF(ul.asset_name, ''), a.name, '') LIKE ?
+                    OR COALESCE(NULLIF(ul.asset_type, ''), a.type, '') LIKE ?
+                    OR COALESCE(cat.name, '') LIKE ?
+                    OR COALESCE(ul.source, '') LIKE ?
+                    OR CASE ul.source
+                        WHEN 'manual_create' THEN '手动创建'
+                        WHEN 'single_upload' THEN '单文件上传'
+                        WHEN 'batch_upload' THEN '批量上传'
+                        WHEN 'password_upload' THEN '密码上传'
+                        ELSE COALESCE(ul.source, '')
+                    END LIKE ?
+                    OR COALESCE(ul.original_filename, '') LIKE ?
+                    OR COALESCE(ul.status, '') LIKE ?
+                    OR CASE ul.status
+                        WHEN 'created' THEN '已新增'
+                        WHEN 'skipped' THEN '已跳过'
+                        WHEN 'failed' THEN '失败'
+                        ELSE COALESCE(ul.status, '')
+                    END LIKE ?
+                    OR COALESCE(ul.message, '') LIKE ?
+                )
+            """
+            params.extend([like, like, like, like, like, like, like, like, like])
+
+        total = db.execute(f"SELECT COUNT(*) {base}", params).fetchone()[0]
+        rows = db.execute(f"""
             SELECT
                 ul.id,
                 ul.asset_id,
@@ -189,12 +247,10 @@ def get_upload_logs(
                 ul.status,
                 ul.message,
                 ul.created_at
-            FROM asset_upload_logs ul
-            LEFT JOIN assets a ON a.id = ul.asset_id
-            LEFT JOIN categories cat ON cat.id = COALESCE(ul.category_id, a.category_id)
+            {base}
             ORDER BY ul.created_at DESC, ul.id DESC
             LIMIT ? OFFSET ?
-        """, (limit, offset)).fetchall()
+        """, params + [limit, offset]).fetchall()
     items = [dict(r) for r in rows]
     if not paged:
         return items

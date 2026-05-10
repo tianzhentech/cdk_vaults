@@ -167,6 +167,9 @@
                     </div>
                 </div>
                 <div id="assets-list" class="section-card">
+                    <div class="filter-bar">
+                        <input type="search" id="asset-search" class="table-search-input" placeholder="搜索资产名称 / 描述">
+                    </div>
                     <div class="table-wrap" id="assets-table"></div>
                 </div>
             </div>
@@ -208,6 +211,7 @@
                 </div>
                 <div class="section-card">
                     <div class="filter-bar">
+                        <input type="search" id="cdk-search" class="table-search-input" placeholder="搜索兑换码 / 备注 / 分类">
                         <select id="cdk-filter-category"><option value="">全部分类</option></select>
                         <select id="cdk-filter-status">
                             <option value="">全部状态</option>
@@ -224,6 +228,9 @@
             <div id="page-upload-logs" class="page">
                 <h1 class="page-title">上传记录</h1>
                 <div class="section-card">
+                    <div class="filter-bar">
+                        <input type="search" id="upload-log-search" class="table-search-input" placeholder="搜索资产名 / 原文件 / 来源 / 说明">
+                    </div>
                     <div class="table-wrap" id="upload-logs-table"></div>
                 </div>
             </div>
@@ -232,6 +239,9 @@
             <div id="page-logs" class="page">
                 <h1 class="page-title">兑换记录</h1>
                 <div class="section-card">
+                    <div class="filter-bar">
+                        <input type="search" id="log-search" class="table-search-input" placeholder="搜索 CDK / 分类 / 资产 / IP / UA">
+                    </div>
                     <div class="table-wrap" id="logs-table"></div>
                 </div>
             </div>

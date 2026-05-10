@@ -55,6 +55,7 @@ def list_cdks(
     asset_id: int = 0,
     category_id: int = 0,
     status: str = "",
+    search: str = "",
     page: int = 1,
     page_size: int = 20,
     limit: int | None = None,
@@ -93,6 +94,18 @@ def list_cdks(
         if status:
             base += " AND c.status = ?"
             params.append(status)
+        search = search.strip()
+        if search:
+            like = f"%{search}%"
+            base += """
+                AND (
+                    c.code LIKE ?
+                    OR COALESCE(c.note, '') LIKE ?
+                    OR COALESCE(a.name, '') LIKE ?
+                    OR COALESCE(cat.name, '') LIKE ?
+                )
+            """
+            params.extend([like, like, like, like])
         total = db.execute(f"SELECT COUNT(*) {base}", params).fetchone()[0]
         query = f"""
             SELECT c.*, a.name as asset_name, cat.name as category_name,

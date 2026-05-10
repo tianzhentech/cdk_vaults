@@ -202,6 +202,11 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 
 .code-text { font-family: var(--mono); font-size: 0.85rem; color: var(--text-1);
     letter-spacing: 0.04em; }
+.table-link-btn {
+    padding: 0; border: 0; background: transparent; color: var(--text-2);
+    font: inherit; cursor: pointer; text-align: left;
+}
+.table-link-btn:hover { color: var(--blue); text-decoration: underline; text-underline-offset: 3px; }
 
 /* ── 表单 ───────────────────────────────────────── */
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
@@ -247,13 +252,23 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .icon-btn.disabled:hover, .icon-btn:disabled:hover { border-color: var(--border); color: var(--text-3); }
 
 .filter-bar {
-    display: flex; gap: 12px; margin-bottom: 16px;
+    display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap;
 }
 .filter-bar select {
     padding: 8px 12px; background: var(--bg-secondary); border: 1px solid var(--border);
     border-radius: 8px; color: var(--text-2); font-size: 0.85rem;
     outline: none; font-family: var(--font);
 }
+.table-search-input {
+    min-width: 260px; flex: 1; padding: 8px 12px;
+    background: var(--bg-secondary); border: 1px solid var(--border);
+    border-radius: 8px; color: var(--text-1); font-size: 0.85rem;
+    outline: none; font-family: var(--font);
+}
+.table-search-input:focus {
+    border-color: var(--purple); box-shadow: 0 0 0 3px rgba(139,92,246,0.12);
+}
+.table-search-input::placeholder { color: var(--text-3); }
 
 .empty-state {
     text-align: center; padding: 48px 20px; color: var(--text-3); font-size: 0.9rem;

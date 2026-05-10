@@ -102,6 +102,24 @@
         });
     }
 
+    function bindDebouncedSearch(selector, onSearch) {
+        const input = $(selector);
+        if (!input) return;
+        let timer = null;
+        const run = () => {
+            clearTimeout(timer);
+            timer = setTimeout(() => onSearch(input.value.trim()), 260);
+        };
+        input.addEventListener('input', run);
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                clearTimeout(timer);
+                onSearch(input.value.trim());
+            }
+        });
+    }
+
     // ── 通用请求 ──────────────────────────────────
     async function api(path, opts = {}) {
         const headers = { ...opts.headers };
@@ -528,6 +546,7 @@
     let codexFiles = []; // 暂存多文件
     let assetPage = 1;
     let assetPageSize = 20;
+    let assetSearch = '';
     let selectedAssetIds = new Set();
     let assetDeleteReasons = new Map();
     let assetMeta = new Map();
@@ -558,6 +577,13 @@
         return `<button class="icon-btn" onclick="window._exportAsset(${asset.id})">导出</button>`;
     }
 
+    function renderLogAssetAction(record) {
+        if (!record.asset_id) return esc(record.asset_name) || '-';
+        const canExport = record.category_name === 'Codex' && record.asset_type === 'file';
+        const title = canExport ? '选择导出格式' : '查看资产';
+        return `<button class="table-link-btn" title="${title}" onclick="window._openLogAsset(${record.asset_id}, ${canExport ? 'true' : 'false'})">${esc(record.asset_name) || `#${record.asset_id}`}</button>`;
+    }
+
     async function loadAssets(page) {
         if (page) assetPage = page;
         await populateCategorySelects();
@@ -566,7 +592,9 @@
         assetMeta.clear();
         updateBatchBar();
         try {
-            const data = normalizePagedData(await api(`/assets?page=${assetPage}&page_size=${assetPageSize}`));
+            const params = new URLSearchParams({ page: assetPage, page_size: assetPageSize });
+            if (assetSearch) params.set('search', assetSearch);
+            const data = normalizePagedData(await api(`/assets?${params.toString()}`));
             const list = data.items || [];
             list.forEach(a => {
                 assetMeta.set(a.id, {
@@ -624,6 +652,7 @@
 
     window._assetPage = (p) => loadAssets(p);
     window._assetPageSize = (size) => { assetPageSize = parseInt(size) || 20; assetPage = 1; loadAssets(); };
+    bindDebouncedSearch('#asset-search', (value) => { assetSearch = value; assetPage = 1; loadAssets(); });
 
     // ── 勾选逻辑 ─────────────────────────────────
     function bindAssetCheckboxes() {
@@ -799,6 +828,16 @@
         const format = await chooseCodexExportFormat(1);
         if (!format) return;
         await exportCodexAssets([id], format);
+    };
+
+    window._openLogAsset = async (id, canExport = false) => {
+        if (canExport || assetMeta.get(id)?.canExport) {
+            const format = await chooseCodexExportFormat(1);
+            if (!format) return;
+            await exportCodexAssets([id], format);
+            return;
+        }
+        window._viewAsset(id);
     };
 
     async function doBatchDelete() {
@@ -1167,6 +1206,7 @@
     // ── CDK 管理 ──────────────────────────────────
     let cdkPage = 1;
     let cdkPageSize = 20;
+    let cdkSearch = '';
     let selectedCdkIds = new Set();
     let cdkDeleteReasons = new Map();
     let cdkCodes = new Map();
@@ -1187,11 +1227,12 @@
         updateCDKBatchBar();
         const categoryId = $('#cdk-filter-category').value;
         const status = $('#cdk-filter-status').value;
-        let path = `/cdks?paged=1&page=${cdkPage}&page_size=${cdkPageSize}&`;
-        if (categoryId) path += `category_id=${categoryId}&`;
-        if (status) path += `status=${status}&`;
+        const params = new URLSearchParams({ paged: '1', page: cdkPage, page_size: cdkPageSize });
+        if (categoryId) params.set('category_id', categoryId);
+        if (status) params.set('status', status);
+        if (cdkSearch) params.set('search', cdkSearch);
         try {
-            const data = normalizePagedData(await api(path));
+            const data = normalizePagedData(await api(`/cdks?${params.toString()}`));
             const list = data.items || [];
             list.forEach(c => {
                 cdkCodes.set(c.id, c.code);
@@ -1300,6 +1341,7 @@
 
     window._cdkPage = (p) => loadCDKs(Math.max(1, p));
     window._cdkPageSize = (size) => { cdkPageSize = parseInt(size) || 20; cdkPage = 1; loadCDKs(); };
+    bindDebouncedSearch('#cdk-search', (value) => { cdkSearch = value; cdkPage = 1; loadCDKs(); });
 
     window._toggleCDK = async (id, status) => {
         try { await api(`/cdks/${id}/status`, { method:'PUT', body: JSON.stringify({status}) }); loadCDKs(); }
@@ -1365,19 +1407,30 @@
     // ── 兑换记录 ──────────────────────────────────
     let logPage = 1;
     let logPageSize = 20;
+    let logSearch = '';
 
     async function loadLogs(page) {
         if (page) logPage = page;
         try {
-            const data = normalizePagedData(await api(`/admin/logs?paged=1&page=${logPage}&limit=${logPageSize}`));
+            const params = new URLSearchParams({ paged: '1', page: logPage, limit: logPageSize });
+            if (logSearch) params.set('search', logSearch);
+            const data = normalizePagedData(await api(`/admin/logs?${params.toString()}`));
             const list = data.items || [];
+            list.forEach(r => {
+                if (!r.asset_id) return;
+                assetMeta.set(r.asset_id, {
+                    name: r.asset_name,
+                    canDelete: false,
+                    canExport: r.category_name === 'Codex' && r.asset_type === 'file',
+                });
+            });
             if (!list.length) {
                 $('#logs-table').innerHTML = '<div class="empty-state">暂无兑换记录</div>';
                 renderTablePagination({ id: 'logs-pagination', tableId: 'logs-table', data, pageHandler: '_logPage', pageSizeHandler: '_logPageSize', pageSize: logPageSize });
                 return;
             }
             $('#logs-table').innerHTML = `<table><thead><tr><th>CDK</th><th>分类</th><th>资产</th><th>IP</th><th>User Agent</th><th>时间</th></tr></thead><tbody>${
-                list.map(r => `<tr><td class="code-text">${r.cdk_code}</td><td>${esc(r.category_name)||'<span style="color:var(--text-3)">未分类</span>'}</td><td>${esc(r.asset_name)}</td><td>${r.ip_address||'-'}</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">${esc(r.user_agent||'-')}</td><td>${fmtTime(r.redeemed_at)}</td></tr>`).join('')
+                list.map(r => `<tr><td class="code-text">${r.cdk_code}</td><td>${esc(r.category_name)||'<span style="color:var(--text-3)">未分类</span>'}</td><td>${renderLogAssetAction(r)}</td><td>${r.ip_address||'-'}</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">${esc(r.user_agent||'-')}</td><td>${fmtTime(r.redeemed_at)}</td></tr>`).join('')
             }</tbody></table>`;
             renderTablePagination({ id: 'logs-pagination', tableId: 'logs-table', data, pageHandler: '_logPage', pageSizeHandler: '_logPageSize', pageSize: logPageSize });
         } catch (e) { console.error(e); }
@@ -1385,15 +1438,19 @@
 
     window._logPage = (p) => loadLogs(Math.max(1, p));
     window._logPageSize = (size) => { logPageSize = parseInt(size) || 20; logPage = 1; loadLogs(); };
+    bindDebouncedSearch('#log-search', (value) => { logSearch = value; logPage = 1; loadLogs(); });
 
     // ── 上传记录 ──────────────────────────────────
     let uploadLogPage = 1;
     let uploadLogPageSize = 20;
+    let uploadLogSearch = '';
 
     async function loadUploadLogs(page) {
         if (page) uploadLogPage = page;
         try {
-            const data = normalizePagedData(await api(`/admin/upload-logs?paged=1&page=${uploadLogPage}&limit=${uploadLogPageSize}`));
+            const params = new URLSearchParams({ paged: '1', page: uploadLogPage, limit: uploadLogPageSize });
+            if (uploadLogSearch) params.set('search', uploadLogSearch);
+            const data = normalizePagedData(await api(`/admin/upload-logs?${params.toString()}`));
             const list = data.items || [];
             if (!list.length) {
                 $('#upload-logs-table').innerHTML = '<div class="empty-state">暂无上传记录</div>';
@@ -1420,6 +1477,7 @@
 
     window._uploadLogPage = (p) => loadUploadLogs(Math.max(1, p));
     window._uploadLogPageSize = (size) => { uploadLogPageSize = parseInt(size) || 20; uploadLogPage = 1; loadUploadLogs(); };
+    bindDebouncedSearch('#upload-log-search', (value) => { uploadLogSearch = value; uploadLogPage = 1; loadUploadLogs(); });
 
     // ── 工具 ──────────────────────────────────────
     function statusLabel(s) { return { active:'可用', used:'已用', disabled:'已禁用', expired:'已过期' }[s] || s; }

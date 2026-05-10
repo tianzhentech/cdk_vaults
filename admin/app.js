@@ -1505,7 +1505,36 @@
         return `${(n / 1024 / 1024).toFixed(1)} MB`;
     }
     function esc(s) { if (!s) return ''; const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
-    function fmtTime(s) { if (!s) return '-'; try { return new Date(s).toLocaleString('zh-CN'); } catch { return s; } }
+    function parseServerTime(value) {
+        if (!value) return null;
+        const text = String(value).trim();
+        const match = text.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(\.\d+)?(Z|[+-]\d{2}:?\d{2})?$/);
+        if (!match) {
+            const parsed = new Date(text);
+            return Number.isNaN(parsed.getTime()) ? null : parsed;
+        }
+
+        const fraction = match[3] ? `.${match[3].slice(1, 4).padEnd(3, '0')}` : '';
+        let tz = match[4] || 'Z';
+        if (/^[+-]\d{4}$/.test(tz)) tz = `${tz.slice(0, 3)}:${tz.slice(3)}`;
+        const parsed = new Date(`${match[1]}T${match[2]}${fraction}${tz}`);
+        return Number.isNaN(parsed.getTime()) ? null : parsed;
+    }
+
+    function fmtTime(s) {
+        const parsed = parseServerTime(s);
+        if (!parsed) return s || '-';
+        return parsed.toLocaleString('zh-CN', {
+            timeZone: 'Asia/Shanghai',
+            year: 'numeric',
+            month: 'numeric',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false,
+        });
+    }
 
     // ── 启动 ──────────────────────────────────────
     tryAutoLogin();

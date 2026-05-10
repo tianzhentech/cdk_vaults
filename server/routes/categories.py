@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from server.models import CategoryCreate, CategoryUpdate, CategoryResponse
 from server.auth import get_current_admin
 from server.database import get_db_context
+from server.event_bus import publish_update
 
 router = APIRouter()
 
@@ -90,6 +91,8 @@ def delete_categories_batch(
             db.execute("DELETE FROM categories WHERE id = ?", (cat_id,))
             deleted += 1
 
+    if deleted:
+        publish_update(["categories", "assets", "cdks", "dashboard", "inventory"], audience="all")
     return {"success": True, "deleted": deleted, "blocked": blocked}
 
 
@@ -105,6 +108,7 @@ def create_category(body: CategoryCreate, _admin: str = Depends(get_current_admi
             (body.name, body.description, body.color, body.sort_order),
         )
         row = db.execute("SELECT * FROM categories WHERE id = ?", (cursor.lastrowid,)).fetchone()
+    publish_update(["categories", "cdks", "dashboard"], audience="admin")
     return row_to_category(row)
 
 
@@ -136,6 +140,7 @@ def update_category(cat_id: int, body: CategoryUpdate, _admin: str = Depends(get
 
         row = db.execute("SELECT * FROM categories WHERE id = ?", (cat_id,)).fetchone()
         count = db.execute("SELECT COUNT(*) FROM assets WHERE category_id = ?", (cat_id,)).fetchone()[0]
+    publish_update(["categories", "assets", "cdks", "dashboard", "inventory"], audience="all")
     return row_to_category(row, count)
 
 
@@ -149,4 +154,5 @@ def delete_category(cat_id: int, _admin: str = Depends(get_current_admin)):
         if existing["name"] == "Codex":
             raise HTTPException(status_code=400, detail="内置 Codex 分类不可删除")
         db.execute("DELETE FROM categories WHERE id = ?", (cat_id,))
+    publish_update(["categories", "assets", "cdks", "dashboard", "inventory"], audience="all")
     return {"success": True, "message": "分类已删除"}

@@ -21,6 +21,7 @@ from fastapi.responses import FileResponse
 from server.models import AssetCreate, AssetUpdate, AssetRedeemStatusUpdate, AssetCodexExportRequest, AssetResponse
 from server.auth import get_current_admin, verify_password
 from server.database import get_db_context
+from server.event_bus import publish_update
 from server.routes import redeem as redeem_exports
 
 router = APIRouter()
@@ -423,6 +424,8 @@ def delete_assets_batch(
                     os.remove(full_path)
             deleted += 1
 
+    if deleted:
+        publish_update(["assets", "categories", "dashboard", "inventory"], audience="all")
     return {"success": True, "deleted": deleted, "blocked": blocked}
 
 
@@ -450,6 +453,7 @@ def create_asset(body: AssetCreate, _admin: str = Depends(get_current_admin)):
                 status="skipped",
                 message="重复资产，已跳过",
             )
+            publish_update(["upload_logs"], audience="admin")
             return asset_write_result(skipped_items=[row_to_asset(duplicate)])
 
         now = datetime.now(timezone.utc).isoformat()
@@ -471,6 +475,7 @@ def create_asset(body: AssetCreate, _admin: str = Depends(get_current_admin)):
             status="created",
             message="创建成功",
         )
+    publish_update(["assets", "categories", "dashboard", "inventory", "upload_logs"], audience="all")
     return asset_write_result(created_items=[created])
 
 
@@ -500,7 +505,9 @@ async def upload_asset(
             source="single_upload",
         )
     if skipped:
+        publish_update(["upload_logs"], audience="admin")
         return asset_write_result(skipped_items=[skipped])
+    publish_update(["assets", "categories", "dashboard", "inventory", "upload_logs"], audience="all")
     return asset_write_result(created_items=[created])
 
 
@@ -553,6 +560,10 @@ async def upload_batch(
             elif created:
                 results.append(created)
 
+    if results:
+        publish_update(["assets", "categories", "dashboard", "inventory", "upload_logs"], audience="all")
+    elif skipped:
+        publish_update(["upload_logs"], audience="admin")
     return asset_write_result(created_items=results, skipped_items=skipped)
 
 
@@ -611,6 +622,10 @@ async def upload_with_password(
             elif created:
                 results.append(created)
 
+    if results:
+        publish_update(["assets", "categories", "dashboard", "inventory", "upload_logs"], audience="all")
+    elif skipped:
+        publish_update(["upload_logs"], audience="admin")
     return asset_write_result(created_items=results, skipped_items=skipped)
 
 
@@ -727,6 +742,7 @@ def update_asset_redeem_status(
 
     result = row_to_asset(row)
     result["message"] = message
+    publish_update(["assets", "cdks", "logs", "dashboard", "inventory"], audience="all")
     return result
 
 
@@ -770,6 +786,7 @@ def update_asset(asset_id: int, body: AssetUpdate, _admin: str = Depends(get_cur
             FROM assets a
             LEFT JOIN categories c ON a.category_id = c.id WHERE a.id = ?
         """, (asset_id,)).fetchone()
+    publish_update(["assets", "categories", "dashboard", "inventory"], audience="all")
     return row_to_asset(row)
 
 
@@ -796,4 +813,5 @@ def delete_asset(asset_id: int, _admin: str = Depends(get_current_admin)):
             if os.path.exists(full_path):
                 os.remove(full_path)
 
+    publish_update(["assets", "categories", "dashboard", "inventory"], audience="all")
     return {"success": True, "message": "资产已删除"}

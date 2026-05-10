@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends
 from server.models import AdminLogin, TokenResponse, StatsResponse, RedemptionLogResponse, RedeemNoticeSettings
 from server.auth import verify_password, create_token, get_current_admin
 from server.database import get_db_context, get_redeem_notice, set_redeem_notice
+from server.event_bus import publish_update
 from fastapi import HTTPException
 
 router = APIRouter()
@@ -42,7 +43,9 @@ def update_notice_settings(body: RedeemNoticeSettings, _admin: str = Depends(get
     """更新兑换页通知配置。"""
     content = body.content.strip()
     with get_db_context() as db:
-        return set_redeem_notice(db, body.enabled, content)
+        notice = set_redeem_notice(db, body.enabled, content)
+    publish_update(["notice", "dashboard"], audience="all")
+    return notice
 
 
 @router.get("/stats", response_model=StatsResponse)

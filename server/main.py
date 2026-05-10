@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
 from server.database import init_db
-from server.routes import admin, assets, categories, cdks, redeem
+from server.routes import admin, assets, categories, cdks, events, redeem
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -51,6 +51,7 @@ app.include_router(categories.router, prefix="/api/categories", tags=["Categorie
 app.include_router(assets.router, prefix="/api/assets", tags=["Assets"])
 app.include_router(cdks.router, prefix="/api/cdks", tags=["CDKs"])
 app.include_router(redeem.router, prefix="/api/redeem", tags=["Redeem"])
+app.include_router(events.router, prefix="/api/events", tags=["Events"])
 
 # ── 静态文件 ──────────────────────────────────────────
 # 上传目录只作为内部存储，不再通过 /uploads 静态暴露。

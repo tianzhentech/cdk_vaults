@@ -34,6 +34,8 @@
     let detectedAlreadyRedeemed = false;
     let detectedReexportCount = 0;
     let isSubmitting = false;
+    let publicEvents = null;
+    let publicRefreshTimer = null;
 
     // ── 格式选择器交互 ───────────────────────────
     $$('.format-option input').forEach(radio => {
@@ -79,6 +81,42 @@
             }
         } catch (_) {
             siteNotice.classList.add('hidden');
+        }
+    }
+
+    function startPublicEvents() {
+        if (!window.EventSource || publicEvents) return;
+        publicEvents = new EventSource('/api/events/public-stream');
+        publicEvents.addEventListener('update', (event) => {
+            try {
+                const data = JSON.parse(event.data || '{}');
+                handlePublicUpdate(data.resources || []);
+            } catch (_) {
+                // Ignore malformed SSE payloads; the next event will recover.
+            }
+        });
+        publicEvents.onerror = () => {
+            // Native EventSource reconnects automatically.
+        };
+    }
+
+    function handlePublicUpdate(resources) {
+        const set = new Set(resources);
+        if (set.has('notice')) loadSiteNotice();
+        if (set.has('inventory') || set.has('assets') || set.has('cdks')) {
+            clearTimeout(publicRefreshTimer);
+            publicRefreshTimer = setTimeout(refreshCurrentDetection, 250);
+        }
+    }
+
+    async function refreshCurrentDetection() {
+        if (isSubmitting) return;
+        const codes = parseCodes();
+        if (!codes.length) return;
+        try {
+            await detectCodes(codes, { force: true });
+        } catch (_) {
+            // Keep the current UI if the transient refresh fails.
         }
     }
 
@@ -576,5 +614,6 @@
 
     // 自动聚焦
     loadSiteNotice();
+    startPublicEvents();
     input.focus();
 })();

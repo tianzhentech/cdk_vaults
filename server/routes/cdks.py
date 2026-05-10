@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from server.models import CDKGenerate, CDKResponse, CDKStatusUpdate
 from server.auth import get_current_admin
 from server.database import get_db_context
+from server.event_bus import publish_update
 from server.utils.cdk_generator import generate_batch
 
 router = APIRouter()
@@ -181,6 +182,7 @@ def generate_cdks(body: CDKGenerate, _admin: str = Depends(get_current_admin)):
                 )
             )
 
+    publish_update(["cdks", "dashboard", "inventory"], audience="all")
     return results
 
 
@@ -196,6 +198,7 @@ def update_cdk_status(
         if not row:
             raise HTTPException(status_code=404, detail="CDK 不存在")
         db.execute("UPDATE cdk_codes SET status = ? WHERE id = ?", (body.status, cdk_id))
+    publish_update(["cdks", "dashboard", "inventory"], audience="all")
     return {"success": True, "message": f"CDK 状态已更新为 {body.status}"}
 
 
@@ -210,6 +213,7 @@ def delete_cdk(cdk_id: int, _admin: str = Depends(get_current_admin)):
         if block_reason:
             raise HTTPException(status_code=409, detail=block_reason)
         db.execute("DELETE FROM cdk_codes WHERE id = ?", (cdk_id,))
+    publish_update(["cdks", "dashboard", "inventory"], audience="all")
     return {"success": True, "message": "CDK 已删除"}
 
 
@@ -237,6 +241,8 @@ def delete_cdks_batch(
             db.execute("DELETE FROM cdk_codes WHERE id = ?", (cdk_id,))
             deleted += 1
 
+    if deleted:
+        publish_update(["cdks", "dashboard", "inventory"], audience="all")
     return {"success": True, "deleted": deleted, "blocked": blocked}
 
 
@@ -262,4 +268,6 @@ def batch_delete_cdks_by_filter(
         cursor = db.execute(query, params)
         deleted = cursor.rowcount
 
+    if deleted:
+        publish_update(["cdks", "dashboard", "inventory"], audience="all")
     return {"success": True, "message": f"已删除 {deleted} 个 CDK"}

@@ -37,9 +37,8 @@ def create_token(expires_delta: Optional[timedelta] = None) -> str:
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
 
-def get_current_admin(credentials: HTTPAuthorizationCredentials = Security(security)) -> str:
-    """验证 JWT Token，返回管理员标识"""
-    token = credentials.credentials
+def verify_admin_token(token: str) -> str:
+    """验证 JWT Token 字符串，返回管理员标识"""
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         sub: str = payload.get("sub")
@@ -54,3 +53,8 @@ def get_current_admin(credentials: HTTPAuthorizationCredentials = Security(secur
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token 已过期或无效",
         )
+
+
+def get_current_admin(credentials: HTTPAuthorizationCredentials = Security(security)) -> str:
+    """验证 JWT Token，返回管理员标识"""
+    return verify_admin_token(credentials.credentials)

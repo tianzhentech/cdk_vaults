@@ -7,6 +7,10 @@
     const API = '/api';
     let TOKEN = localStorage.getItem('cdk_token') || '';
     let toastTimer = null;
+    let currentPage = 'dashboard';
+    let adminEvents = null;
+    let sseRefreshTimer = null;
+    let pendingSseResources = new Set();
 
     function ensureUiLayer() {
         let toastRoot = $('#toast-root');
@@ -151,10 +155,12 @@
     function showApp() {
         loginOverlay.classList.add('hidden');
         app.classList.remove('hidden');
+        startAdminEvents();
         loadDashboard();
     }
 
     function logout() {
+        stopAdminEvents();
         TOKEN = ''; localStorage.removeItem('cdk_token');
         loginOverlay.classList.remove('hidden');
         app.classList.add('hidden');
@@ -166,6 +172,7 @@
     // ── 导航 ──────────────────────────────────────
     $$('.nav-item').forEach(btn => {
         btn.addEventListener('click', () => {
+            currentPage = btn.dataset.page;
             $$('.nav-item').forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
             $$('.page').forEach(p => p.classList.remove('active'));
@@ -181,6 +188,51 @@
             loaders[btn.dataset.page]?.();
         });
     });
+
+    function startAdminEvents() {
+        if (!window.EventSource || !TOKEN || adminEvents) return;
+        adminEvents = new EventSource(`${API}/events/admin-stream?token=${encodeURIComponent(TOKEN)}`);
+        adminEvents.addEventListener('update', (event) => {
+            try {
+                const data = JSON.parse(event.data || '{}');
+                scheduleSseRefresh(data.resources || []);
+            } catch (e) {
+                console.error(e);
+            }
+        });
+        adminEvents.onerror = () => {
+            // EventSource has its own reconnect loop; keep this quiet to avoid UI noise.
+        };
+    }
+
+    function stopAdminEvents() {
+        if (adminEvents) {
+            adminEvents.close();
+            adminEvents = null;
+        }
+        clearTimeout(sseRefreshTimer);
+        pendingSseResources.clear();
+    }
+
+    function scheduleSseRefresh(resources) {
+        resources.forEach(r => pendingSseResources.add(r));
+        clearTimeout(sseRefreshTimer);
+        sseRefreshTimer = setTimeout(refreshCurrentPageFromSse, 250);
+    }
+
+    function refreshCurrentPageFromSse() {
+        const resources = new Set(pendingSseResources);
+        pendingSseResources.clear();
+        const has = (...names) => names.some(name => resources.has(name));
+
+        if (has('categories')) cachedCategories = [];
+        if (currentPage === 'dashboard' && has('dashboard', 'logs', 'notice')) loadDashboard();
+        if (currentPage === 'categories' && has('categories', 'assets')) loadCategories();
+        if (currentPage === 'assets' && has('assets', 'categories', 'inventory')) loadAssets();
+        if (currentPage === 'cdks' && has('cdks', 'categories', 'inventory')) loadCDKs();
+        if (currentPage === 'upload-logs' && has('upload_logs')) loadUploadLogs();
+        if (currentPage === 'logs' && has('logs')) loadLogs();
+    }
 
     // ── 数据概览 ──────────────────────────────────
     const noticeEnabled = $('#notice-enabled');

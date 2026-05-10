@@ -18,6 +18,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from server.models import RedeemRequest, RedeemResponse, AssetResponse, CodexRedeemRequest
 from server.database import get_db_context, get_redeem_notice
+from server.event_bus import publish_update
 from server.utils.codex_converter import (
     cpa_access_token,
     cpa_has_text_passwords,
@@ -396,6 +397,7 @@ def redeem_cdk(body: RedeemRequest, request: Request):
 
         counts = _cdk_counts(db, cdk)
 
+    publish_update(["assets", "cdks", "logs", "dashboard", "inventory"], audience="all")
     return RedeemResponse(
         success=True,
         message=f"兑换成功，共兑换 {len(redeemed_assets)} 个资产",
@@ -461,6 +463,7 @@ def redeem_codex(body: CodexRedeemRequest, request: Request):
     cpa_items = []
     reexported = False
     allow_reexport = len(codes) == 1
+    consumed_any = False
 
     with get_db_context("IMMEDIATE") as db:
         for code in codes:
@@ -494,11 +497,15 @@ def redeem_codex(body: CodexRedeemRequest, request: Request):
                 _validate_codex_payload_format(cpa, fmt, code, asset)
                 if not should_reexport:
                     _consume_cdk(db, cdk, asset, request)
+                    consumed_any = True
                 cpa_items.append((cdk, asset, cpa))
         cdk_by_id = {cdk["id"]: cdk for cdk, _, _ in cpa_items}
         cdk_counts = [_cdk_counts(db, cdk) for cdk in cdk_by_id.values()]
         remaining_count = sum(counts["remaining"] for counts in cdk_counts)
         inventory_count = sum(counts["inventory"] for counts in cdk_counts)
+
+    if consumed_any:
+        publish_update(["assets", "cdks", "logs", "dashboard", "inventory"], audience="all")
 
     # ── 生成下载 ──────────────────────────────────
     response_headers = {

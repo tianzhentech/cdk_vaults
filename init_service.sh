@@ -6,6 +6,8 @@ PROJECT_DIR="${SCRIPT_DIR}"
 SERVICE_NAME="${SERVICE_NAME:-cdk-vaults}"
 SERVICE_LABEL="${SERVICE_LABEL:-local.${SERVICE_NAME}}"
 SERVICE_USER="${SERVICE_USER:-${SUDO_USER:-${USER}}}"
+GRACEFUL_SHUTDOWN_TIMEOUT="${GRACEFUL_SHUTDOWN_TIMEOUT:-3}"
+SYSTEMD_TIMEOUT_STOP_SEC="${SYSTEMD_TIMEOUT_STOP_SEC:-8}"
 UV_BIN="${UV_BIN:-}"
 
 log() {
@@ -103,9 +105,12 @@ Type=simple
 User=${SERVICE_USER}
 WorkingDirectory=${PROJECT_DIR}
 EnvironmentFile=-${PROJECT_DIR}/.env
+Environment=GRACEFUL_SHUTDOWN_TIMEOUT=${GRACEFUL_SHUTDOWN_TIMEOUT}
 ExecStart=${UV_BIN} run cdk-vaults
 Restart=always
 RestartSec=5
+TimeoutStopSec=${SYSTEMD_TIMEOUT_STOP_SEC}
+KillMode=mixed
 
 [Install]
 WantedBy=multi-user.target
@@ -123,9 +128,12 @@ Type=simple
 User=${SERVICE_USER}
 WorkingDirectory=${PROJECT_DIR}
 EnvironmentFile=-${PROJECT_DIR}/.env
+Environment=GRACEFUL_SHUTDOWN_TIMEOUT=${GRACEFUL_SHUTDOWN_TIMEOUT}
 ExecStart=${UV_BIN} run cdk-vaults
 Restart=always
 RestartSec=5
+TimeoutStopSec=${SYSTEMD_TIMEOUT_STOP_SEC}
+KillMode=mixed
 
 [Install]
 WantedBy=multi-user.target

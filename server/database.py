@@ -12,6 +12,8 @@ DATA_DIR = os.path.join(BASE_DIR, "data")
 DB_PATH = os.path.join(DATA_DIR, "vaults.db")
 REDEEM_NOTICE_ENABLED_KEY = "redeem_notice_enabled"
 REDEEM_NOTICE_CONTENT_KEY = "redeem_notice_content"
+STARTUP_MIGRATION_VERSION_KEY = "startup_migration_version"
+STARTUP_MIGRATION_VERSION = "2026-05-10-cdk-asset-history-cleanup"
 
 
 def get_db() -> sqlite3.Connection:
@@ -391,7 +393,10 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_asset_upload_logs_source ON asset_upload_logs(source);
     """)
 
-    _migrate_cdk_codes_schema(conn)
+    needs_startup_migration = get_setting(conn, STARTUP_MIGRATION_VERSION_KEY, "") != STARTUP_MIGRATION_VERSION
+    if needs_startup_migration:
+        _migrate_cdk_codes_schema(conn)
+
     _ensure_cdk_indexes(conn)
 
     if not _column_exists(conn, "assets", "consumed_at"):
@@ -399,33 +404,35 @@ def init_db():
     if not _column_exists(conn, "assets", "consumed_by_cdk_id"):
         conn.execute("ALTER TABLE assets ADD COLUMN consumed_by_cdk_id INTEGER")
 
-    # 兼容旧 CDK：旧的一码一资产关系迁移成资产额度明细。
-    conn.execute("""
-        INSERT OR IGNORE INTO cdk_assets (cdk_id, asset_id, consumed_at)
-        SELECT id, asset_id, CASE WHEN used_count > 0 THEN CURRENT_TIMESTAMP ELSE NULL END
-        FROM cdk_codes
-        WHERE asset_id IS NOT NULL
-    """)
-    conn.execute("""
-        UPDATE cdk_codes
-        SET category_id = COALESCE(
-            category_id,
-            (SELECT a.category_id FROM assets a WHERE a.id = cdk_codes.asset_id)
-        )
-    """)
-    conn.execute("""
-        UPDATE assets
-        SET consumed_at = COALESCE(consumed_at, CURRENT_TIMESTAMP),
-            consumed_by_cdk_id = COALESCE(
-                consumed_by_cdk_id,
-                (SELECT c.id FROM cdk_codes c WHERE c.asset_id = assets.id AND c.used_count > 0 LIMIT 1)
+    if needs_startup_migration:
+        # 兼容旧 CDK：旧的一码一资产关系迁移成资产额度明细。
+        conn.execute("""
+            INSERT OR IGNORE INTO cdk_assets (cdk_id, asset_id, consumed_at)
+            SELECT id, asset_id, CASE WHEN used_count > 0 THEN CURRENT_TIMESTAMP ELSE NULL END
+            FROM cdk_codes
+            WHERE asset_id IS NOT NULL
+        """)
+        conn.execute("""
+            UPDATE cdk_codes
+            SET category_id = COALESCE(
+                category_id,
+                (SELECT a.category_id FROM assets a WHERE a.id = cdk_codes.asset_id)
             )
-        WHERE consumed_at IS NULL
-          AND id IN (SELECT asset_id FROM cdk_codes WHERE used_count > 0)
-    """)
-    _dedupe_cdk_asset_bindings(conn)
-    _remove_unconsumed_cdk_asset_bindings(conn)
-    _ensure_unique_asset_binding(conn)
+        """)
+        conn.execute("""
+            UPDATE assets
+            SET consumed_at = COALESCE(consumed_at, CURRENT_TIMESTAMP),
+                consumed_by_cdk_id = COALESCE(
+                    consumed_by_cdk_id,
+                    (SELECT c.id FROM cdk_codes c WHERE c.asset_id = assets.id AND c.used_count > 0 LIMIT 1)
+                )
+            WHERE consumed_at IS NULL
+              AND id IN (SELECT asset_id FROM cdk_codes WHERE used_count > 0)
+        """)
+        _dedupe_cdk_asset_bindings(conn)
+        _remove_unconsumed_cdk_asset_bindings(conn)
+        _ensure_unique_asset_binding(conn)
+        set_setting(conn, STARTUP_MIGRATION_VERSION_KEY, STARTUP_MIGRATION_VERSION)
     conn.execute(
         "INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)",
         (REDEEM_NOTICE_ENABLED_KEY, "0"),

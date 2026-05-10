@@ -41,7 +41,7 @@ async def _event_stream(request: Request, channel: str):
         yield _sse_message("connected", {"channel": channel})
         while not await request.is_disconnected():
             try:
-                message = await asyncio.to_thread(subscriber.get, True, 15)
+                message = await asyncio.to_thread(subscriber.get, True, 1)
             except queue.Empty:
                 yield ": ping\n\n"
                 continue

@@ -6,6 +6,8 @@ PROJECT_DIR="${SCRIPT_DIR}"
 SERVICE_NAME="${SERVICE_NAME:-cdk-vaults}"
 SERVICE_LABEL="${SERVICE_LABEL:-local.${SERVICE_NAME}}"
 SKIP_PULL="${SKIP_PULL:-0}"
+GRACEFUL_SHUTDOWN_TIMEOUT="${GRACEFUL_SHUTDOWN_TIMEOUT:-3}"
+SYSTEMD_TIMEOUT_STOP_SEC="${SYSTEMD_TIMEOUT_STOP_SEC:-8}"
 UV_BIN="${UV_BIN:-}"
 
 log() {
@@ -90,10 +92,54 @@ sync_dependencies() {
     (cd "${PROJECT_DIR}" && "${UV_BIN}" sync --locked)
 }
 
+elapsed_seconds() {
+    local started="$1"
+    local finished
+    finished="$(date +%s)"
+    printf '%ss' "$((finished - started))"
+}
+
+ensure_systemd_shutdown_override() {
+    local override_dir="/etc/systemd/system/${SERVICE_NAME}.service.d"
+    local override_file="${override_dir}/shutdown.conf"
+
+    log "Ensuring systemd shutdown timeout: ${SYSTEMD_TIMEOUT_STOP_SEC}s"
+    run_root mkdir -p "${override_dir}"
+    if [[ "${EUID}" -eq 0 ]]; then
+        cat > "${override_file}" <<EOF
+[Service]
+Environment=GRACEFUL_SHUTDOWN_TIMEOUT=${GRACEFUL_SHUTDOWN_TIMEOUT}
+TimeoutStopSec=${SYSTEMD_TIMEOUT_STOP_SEC}
+KillMode=mixed
+EOF
+    else
+        need_cmd sudo
+        sudo tee "${override_file}" >/dev/null <<EOF
+[Service]
+Environment=GRACEFUL_SHUTDOWN_TIMEOUT=${GRACEFUL_SHUTDOWN_TIMEOUT}
+TimeoutStopSec=${SYSTEMD_TIMEOUT_STOP_SEC}
+KillMode=mixed
+EOF
+    fi
+    run_root systemctl daemon-reload
+}
+
 restart_systemd() {
     need_cmd systemctl
-    log "Restarting systemd service: ${SERVICE_NAME}"
-    run_root systemctl restart "${SERVICE_NAME}"
+    local started
+
+    ensure_systemd_shutdown_override
+
+    log "Stopping systemd service: ${SERVICE_NAME}"
+    started="$(date +%s)"
+    run_root systemctl stop "${SERVICE_NAME}"
+    log "Stopped systemd service in $(elapsed_seconds "${started}")"
+
+    log "Starting systemd service: ${SERVICE_NAME}"
+    started="$(date +%s)"
+    run_root systemctl start "${SERVICE_NAME}"
+    log "Started systemd service in $(elapsed_seconds "${started}")"
+
     run_root systemctl status "${SERVICE_NAME}" --no-pager || true
 }
 

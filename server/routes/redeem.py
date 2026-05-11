@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from server.models import RedeemRequest, RedeemResponse, AssetResponse, CodexRedeemRequest
+from server.models import RedeemRequest, RedeemResponse, AssetResponse, CodexRedeemRequest, RedeemDetectRequest
 from server.database import get_db_context, get_redeem_notice
 from server.event_bus import publish_update
 from server.utils.codex_converter import (
@@ -87,6 +87,20 @@ def _category_asset_clause(category_id):
     if category_id is None:
         return "a.category_id IS NULL", []
     return "a.category_id = ?", [category_id]
+
+
+def _normalize_codes(codes: list[str]) -> list[str]:
+    normalized = []
+    seen = set()
+    for raw in codes:
+        code = str(raw or "").strip().upper()
+        if not code:
+            continue
+        if code in seen:
+            raise HTTPException(status_code=400, detail=f"兑换码 {code} 重复提交")
+        seen.add(code)
+        normalized.append(code)
+    return normalized
 
 
 def _validate_cdk_record(db, code: str, allow_used: bool = False):
@@ -200,6 +214,67 @@ def _cdk_counts(db, cdk) -> dict:
         "unassigned_inventory": inventory,
         "used": used,
         "remaining": remaining,
+    }
+
+
+def _inventory_count_for_category(db, category_id) -> int:
+    category_clause, category_params = _category_asset_clause(category_id)
+    return db.execute(
+        f"""SELECT COUNT(*)
+            FROM assets a
+            WHERE {category_clause}
+              AND a.consumed_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM cdk_assets ca
+                  WHERE ca.asset_id = a.id AND ca.consumed_at IS NOT NULL
+              )""",
+        category_params,
+    ).fetchone()[0]
+
+
+def _aggregate_cdk_detection(db, cdk_items: list[dict]) -> dict:
+    total_remaining = sum(item["counts"]["remaining"] for item in cdk_items)
+    total_used = sum(item["counts"]["used"] for item in cdk_items)
+    total_quota = sum(item["counts"]["total"] for item in cdk_items)
+    all_codex = all(item["category_name"] == CODEX_CATEGORY_NAME for item in cdk_items)
+    completed_items = [
+        item for item in cdk_items
+        if item["counts"]["remaining"] <= 0 and len(item["redeemed_assets"]) > 0
+    ]
+    all_completed = bool(cdk_items) and len(completed_items) == len(cdk_items)
+    reexport_count = sum(len(item["redeemed_assets"]) for item in cdk_items) if all_completed and all_codex else 0
+
+    inventory_by_category = {}
+    redeemable_by_category = {}
+    remaining_limits = []
+    for item in cdk_items:
+        category_id = item["category_id"]
+        if category_id not in inventory_by_category:
+            inventory_by_category[category_id] = _inventory_count_for_category(db, category_id)
+        if item["counts"]["remaining"] > 0:
+            redeemable_by_category[category_id] = redeemable_by_category.get(category_id, 0) + 1
+            remaining_limits.append(item["counts"]["remaining"])
+
+    category_quantity_limits = []
+    for category_id, cdk_count in redeemable_by_category.items():
+        inventory = inventory_by_category.get(category_id, 0)
+        category_quantity_limits.append(inventory // max(cdk_count, 1))
+    quantity_limits = [*remaining_limits, *category_quantity_limits]
+    quantity_limit = min(quantity_limits) if quantity_limits else 0
+
+    category_names = {item["category_name"] for item in cdk_items}
+    category_name = next(iter(category_names)) if len(category_names) == 1 else None
+    return {
+        "category_name": category_name,
+        "is_codex": all_codex,
+        "already_redeemed": all_codex and all_completed,
+        "reexport_count": reexport_count,
+        "remaining_count": total_remaining,
+        "inventory_count": sum(inventory_by_category.values()),
+        "quantity_limit": quantity_limit,
+        "used_count": total_used,
+        "total_count": total_quota,
     }
 
 
@@ -392,38 +467,41 @@ def _select_codex_assets_for_format(db, cdk, requested_count: int, code: str, fm
 
 # ── CDK 探测 (不消费) ─────────────────────────────────
 @router.post("/detect")
-def detect_cdk(body: RedeemRequest):
+def detect_cdk(body: RedeemDetectRequest):
     """
     探测 CDK 所属分类 — 不消费，仅返回分类信息。
     前端用来动态切换 UI（普通兑换 vs Codex 导出格式选择）。
     """
-    code = body.code.strip().upper()
+    raw_codes = body.codes or ([body.code] if body.code else [])
+    try:
+        codes = _normalize_codes(raw_codes)
+    except HTTPException:
+        return {"found": False, "category_name": None, "is_codex": False}
+    if not codes:
+        return {"found": False, "category_name": None, "is_codex": False}
+
     with get_db_context() as db:
-        try:
-            cdk = _validate_cdk_record(db, code, allow_used=True)
-        except HTTPException:
-            return {"found": False, "category_name": None, "is_codex": False}
-        counts = _cdk_counts(db, cdk)
-        redeemed_assets = _redeemed_assets_for_cdk(db, cdk)
-        asset = redeemed_assets[0] if redeemed_assets else None
-        cat_name = _cdk_category_name(db, cdk, asset)
-        is_single_use_cdk = int(cdk["max_uses"] or 1) <= 1
-        already_redeemed = (
-            is_single_use_cdk
-            and counts["used"] > 0
-            and counts["remaining"] <= 0
-            and len(redeemed_assets) > 0
-        )
+        cdk_items = []
+        for code in codes:
+            try:
+                cdk = _validate_cdk_record(db, code, allow_used=True)
+            except HTTPException:
+                return {"found": False, "category_name": None, "is_codex": False}
+            counts = _cdk_counts(db, cdk)
+            redeemed_assets = _redeemed_assets_for_cdk(db, cdk)
+            asset = redeemed_assets[0] if redeemed_assets else None
+            cdk_items.append({
+                "code": code,
+                "cdk": cdk,
+                "counts": counts,
+                "redeemed_assets": redeemed_assets,
+                "category_id": _cdk_category_id(db, cdk, asset),
+                "category_name": _cdk_category_name(db, cdk, asset),
+            })
+        detection = _aggregate_cdk_detection(db, cdk_items)
         return {
             "found": True,
-            "category_name": cat_name,
-            "is_codex": cat_name == CODEX_CATEGORY_NAME,
-            "already_redeemed": already_redeemed,
-            "reexport_count": len(redeemed_assets) if already_redeemed else 0,
-            "remaining_count": counts["remaining"],
-            "inventory_count": counts["inventory"],
-            "used_count": counts["used"],
-            "total_count": counts["total"],
+            **detection,
         }
 
 
@@ -500,39 +578,45 @@ def download_redeemed_file(token: str):
 @router.post("/codex")
 def redeem_codex(body: CodexRedeemRequest, request: Request):
     """Codex 专用批量兑换 — 支持 CPA / Sub2API 格式导出"""
-    codes = [c.strip().upper() for c in body.codes if c.strip()]
+    codes = _normalize_codes(body.codes)
     if not codes:
         raise HTTPException(status_code=400, detail="请输入至少一个兑换码")
-    seen = set()
-    for code in codes:
-        if code in seen:
-            raise HTTPException(status_code=400, detail=f"兑换码 {code} 重复提交")
-        seen.add(code)
 
     fmt = body.format
     cpa_items = []
     reexported = False
-    allow_reexport = len(codes) == 1
     consumed_any = False
     skipped_incompatible = 0
 
     with get_db_context("IMMEDIATE") as db:
+        cdk_items = []
         for code in codes:
             cdk = _validate_cdk_record(db, code, allow_used=True)
             counts = _cdk_counts(db, cdk)
             redeemed_assets = _redeemed_assets_for_cdk(db, cdk)
-            is_single_use_cdk = int(cdk["max_uses"] or 1) <= 1
-            should_reexport = (
-                allow_reexport
-                and is_single_use_cdk
-                and counts["remaining"] <= 0
-                and len(redeemed_assets) > 0
-            )
+            asset = redeemed_assets[0] if redeemed_assets else None
+            cdk_items.append({
+                "code": code,
+                "cdk": cdk,
+                "counts": counts,
+                "redeemed_assets": redeemed_assets,
+                "category_id": _cdk_category_id(db, cdk, asset),
+                "category_name": _cdk_category_name(db, cdk, asset),
+            })
+
+        detection = _aggregate_cdk_detection(db, cdk_items)
+        should_reexport = detection["is_codex"] and detection["already_redeemed"]
+
+        for item in cdk_items:
+            code = item["code"]
+            cdk = item["cdk"]
+            completed = item["counts"]["remaining"] <= 0 and len(item["redeemed_assets"]) > 0
             if should_reexport:
-                assets = redeemed_assets
                 reexported = True
-                selected_assets = [(asset, _load_cpa_json(asset)) for asset in assets]
+                selected_assets = [(asset, _load_cpa_json(asset)) for asset in item["redeemed_assets"]]
             else:
+                if completed:
+                    continue
                 cdk = _validate_cdk_record(db, code)
                 selected_assets, _, skipped_count = _select_codex_assets_for_format(db, cdk, body.quantity, code, fmt)
                 skipped_incompatible += skipped_count
@@ -542,10 +626,12 @@ def redeem_codex(body: CodexRedeemRequest, request: Request):
                     ok, message = _codex_payload_format_compatible(cpa, fmt, asset)
                     if not ok:
                         raise HTTPException(status_code=400, detail=message)
-                if not should_reexport:
+                else:
                     _consume_cdk(db, cdk, asset, request)
                     consumed_any = True
                 cpa_items.append((cdk, asset, cpa))
+        if not cpa_items:
+            raise HTTPException(status_code=400, detail="没有可兑换或可重新导出的 Codex 资产")
         cdk_by_id = {cdk["id"]: cdk for cdk, _, _ in cpa_items}
         cdk_counts = [_cdk_counts(db, cdk) for cdk in cdk_by_id.values()]
         remaining_count = sum(counts["remaining"] for counts in cdk_counts)

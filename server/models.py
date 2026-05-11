@@ -120,6 +120,11 @@ class RedeemRequest(BaseModel):
     quantity: int = Field(default=1, ge=1, le=1000, description="本次兑换资产数量")
 
 
+class RedeemDetectRequest(BaseModel):
+    code: Optional[str] = Field(default=None, max_length=50, description="兼容旧版：单个 CDK 兑换码")
+    codes: list[str] = Field(default_factory=list, description="CDK 兑换码列表")
+
+
 class CodexRedeemRequest(BaseModel):
     codes: list[str] = Field(..., min_length=1, description="CDK兑换码列表")
     format: str = Field(default="cpa", pattern="^(cpa|sub2api_single|auth_json|sub2api_multi|text)$", description="导出格式")

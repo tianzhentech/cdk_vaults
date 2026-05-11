@@ -31,6 +31,7 @@
     let detectedRemaining = 0;
     let detectedTotal = 0;
     let detectedInventory = 0;
+    let detectedQuantityLimit = 0;
     let detectedAlreadyRedeemed = false;
     let detectedReexportCount = 0;
     let isSubmitting = false;
@@ -136,7 +137,7 @@
     function applyDetectResult(codes, data) {
         const detectKey = getDetectKey(codes);
         lastDetectedCode = detectKey;
-        detectedAlreadyRedeemed = codes.length === 1 && data.already_redeemed === true;
+        detectedAlreadyRedeemed = data.already_redeemed === true;
         detectedReexportCount = detectedAlreadyRedeemed ? (parseInt(data.reexport_count) || 0) : 0;
         setCodexMode(data.is_codex === true);
         updateDetectHintText();
@@ -147,11 +148,12 @@
                 data.total_count || 0,
                 true,
                 data.inventory_count ?? data.remaining_count ?? 0,
+                data.quantity_limit,
             );
         } else {
             detectedAlreadyRedeemed = false;
             detectedReexportCount = 0;
-            setQuotaInfo(0, 0, false, 0);
+            setQuotaInfo(0, 0, false, 0, 0);
         }
     }
 
@@ -165,7 +167,7 @@
         const res = await fetch('/api/redeem/detect', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ code: codes[0] }),
+            body: JSON.stringify({ codes }),
         });
         if (!res.ok) throw new Error('识别兑换码失败');
         const data = await res.json();
@@ -177,7 +179,7 @@
         clearTimeout(detectTimer);
         if (!codes.length) {
             setCodexMode(false);
-            setQuotaInfo(0, 0, false, 0);
+            setQuotaInfo(0, 0, false, 0, 0);
             detectedAlreadyRedeemed = false;
             detectedReexportCount = 0;
             lastDetectedCode = '';
@@ -201,9 +203,12 @@
 
     function updateDetectHintText() {
         if (!isCodexMode) return;
-        detectHintText.innerHTML = detectedAlreadyRedeemed
-            ? `该 CDK 已兑换过，可重新选择导出格式再次导出${detectedReexportCount ? ` ${detectedReexportCount} 个资产` : ''}`
-            : '已识别为 <strong>Codex</strong> 账号卡密，请选择导出格式';
+        if (detectedAlreadyRedeemed) {
+            const codes = parseCodes();
+            detectHintText.innerHTML = `${codes.length > 1 ? '这些 CDK 已全部兑换完成' : '该 CDK 已兑换过'}，可重新选择导出格式再次导出${detectedReexportCount ? ` ${detectedReexportCount} 个资产` : ''}`;
+            return;
+        }
+        detectHintText.innerHTML = '已识别为 <strong>Codex</strong> 账号卡密，请选择导出格式';
     }
 
     function setCodexMode(codex) {
@@ -233,15 +238,18 @@
         btnText.textContent = '兑换';
     }
 
-    function setQuotaInfo(remaining, total, forceShow = false, inventory = remaining) {
+    function setQuotaInfo(remaining, total, forceShow = false, inventory = remaining, quantityLimit = null) {
         detectedRemaining = Math.max(0, parseInt(remaining) || 0);
         detectedTotal = Math.max(detectedRemaining, parseInt(total) || 0);
         detectedInventory = Math.max(0, parseInt(inventory) || 0);
+        detectedQuantityLimit = quantityLimit === null || quantityLimit === undefined
+            ? Math.min(detectedRemaining, detectedInventory)
+            : Math.max(0, parseInt(quantityLimit) || 0);
         if (forceShow || detectedTotal > 0) {
             quotaPanel.classList.remove('hidden');
             quotaRemaining.textContent = `${detectedRemaining} / ${detectedTotal}`;
             quotaInventory.textContent = String(detectedInventory);
-            const redeemLimit = Math.min(detectedRemaining, detectedInventory);
+            const redeemLimit = detectedAlreadyRedeemed ? 0 : detectedQuantityLimit;
             const empty = redeemLimit <= 0;
             quantityInput.min = empty ? '0' : '1';
             quantityInput.max = String(empty ? 0 : redeemLimit);
@@ -260,6 +268,7 @@
             quotaPanel.classList.add('hidden');
             quotaRemaining.textContent = `0 / ${detectedTotal}`;
             quotaInventory.textContent = '0';
+            detectedQuantityLimit = 1;
             quantityInput.min = '1';
             quantityInput.max = '1';
             quantityInput.value = '1';
@@ -272,9 +281,7 @@
 
     function clampQuantity() {
         const knownQuota = detectedTotal > 0;
-        const limit = knownQuota
-            ? Math.min(detectedRemaining, detectedInventory)
-            : (parseInt(quantityInput.max) || 1);
+        const limit = knownQuota ? detectedQuantityLimit : (parseInt(quantityInput.max) || 1);
         if (knownQuota && limit <= 0) {
             quantityInput.value = '0';
             return;
@@ -301,7 +308,7 @@
         redeemBtn.disabled = isSubmitting
             || codes.length === 0
             || !detectComplete
-            || (!detectedAlreadyRedeemed && detectedTotal > 0 && (detectedRemaining <= 0 || detectedInventory <= 0));
+            || (!detectedAlreadyRedeemed && detectedTotal > 0 && (detectedRemaining <= 0 || detectedQuantityLimit <= 0));
     }
 
     // ── 兑换逻辑 ─────────────────────────────────
@@ -357,6 +364,7 @@
                 detectedTotal,
                 true,
                 data.inventory_count ?? 0,
+                0,
             );
             showTextResult({
                 text: data.text || '',
@@ -422,7 +430,7 @@
             text: '文本格式（邮箱/GPT密码/邮箱密码）',
         };
         resultName.textContent = reexported
-            ? `该 CDK 已兑换过，已重新导出 ${count} 个资产`
+            ? `已重新导出 ${count} 个资产`
             : `已兑换 ${count} 个资产 · 剩余 ${remainingCount} 个${formatSkippedHint(skippedIncompatibleCount)}`;
         resultBody.innerHTML = `
             <div class="download-success">
@@ -439,7 +447,7 @@
 
     function showTextResult({ text, filename, count, remainingCount = 0, reexported = false, skippedIncompatibleCount = 0 }) {
         resultName.textContent = reexported
-            ? `该 CDK 已兑换过，已重新导出 ${count} 个资产`
+            ? `已重新导出 ${count} 个资产`
             : `已兑换 ${count} 个资产 · 剩余 ${remainingCount} 个${formatSkippedHint(skippedIncompatibleCount)}`;
 
         const box = document.createElement('div');

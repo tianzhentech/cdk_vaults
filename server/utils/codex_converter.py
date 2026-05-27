@@ -30,6 +30,10 @@ def cpa_access_token(cpa: dict) -> str:
     return str(_first_nested_value(cpa, ("access_token", "accessToken", "access token", "at")) or "").strip()
 
 
+def cpa_refresh_token(cpa: dict) -> str:
+    return str(_first_nested_value(cpa, ("refresh_token", "refreshToken", "refresh token", "rt")) or "").strip()
+
+
 def cpa_text_fields(cpa: dict) -> tuple[str, str, str]:
     email = _first_nested_value(cpa, ("email", "mail", "邮箱"))
     gpt_password = _first_nested_value(

@@ -21,6 +21,7 @@ from server.database import get_db_context, get_redeem_notice
 from server.event_bus import publish_update
 from server.utils.codex_converter import (
     cpa_access_token,
+    cpa_refresh_token,
     cpa_has_text_passwords,
     cpa_to_auth_json,
     cpa_to_sub2api_account,
@@ -416,11 +417,14 @@ def _codex_format_label(fmt: str) -> str:
 
 def _codex_payload_format_compatible(cpa: dict, fmt: str, asset) -> tuple[bool, str]:
     has_access_token = bool(cpa_access_token(cpa))
+    has_refresh_token = bool(cpa_refresh_token(cpa))
     has_passwords = cpa_has_text_passwords(cpa)
     label = _codex_asset_label(asset, cpa)
 
     if not has_access_token and fmt != "text":
         return False, f"{label} 缺少 access_token，只能兑换为文本格式"
+    if not has_refresh_token and fmt != "text":
+        return False, f"{label} 缺少 refresh_token，只能兑换为文本格式"
     if has_access_token and not has_passwords and fmt == "text":
         return False, f"{label} 缺少 GPT密码/邮箱密码字段，只能兑换为 CPA、Sub2API 或 auth.json 格式"
     return True, ""
